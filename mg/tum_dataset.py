@@ -56,7 +56,7 @@ class TumDataset:
             print(cntr)
             rgb = cv2.imread(f'{self.path}{a[0]}')
             # cv2.imwrite(f'{self.path}pair/rgb/{str(cntr).zfill(5)}.png', rgb)
-            rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+            # rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             gray = cv2.imread(f'{self.path}{a[0]}', cv2.IMREAD_GRAYSCALE)
             # cv2.imwrite(f'{self.path}pair/gray/{str(cntr).zfill(5)}.png', gray)
             d = cv2.imread(f'{self.path}{a[1]}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
@@ -71,7 +71,7 @@ class TumDataset:
     def ReturnData(self, index):
         file_name = f'{str(index).zfill(5)}.png'
         rgb = cv2.imread(f'{self.path}pair/rgb/{file_name}')
-        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+        # rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         gray = cv2.imread(f'{self.path}pair/gray/{file_name}', cv2.IMREAD_GRAYSCALE)
         d = cv2.imread(f'{self.path}pair/depth/{file_name}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
         return rgb, gray, d
