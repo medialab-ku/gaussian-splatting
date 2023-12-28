@@ -5,20 +5,72 @@ import math
 import numpy as np
 import torch
 from numpy.linalg import inv
-from scene import Scene, GaussianModel
 from superpixel import SuperPixelManager
 import collections
 from scene.cameras import Camera
 from arguments import PipelineParams
-from gaussian_renderer import mg_render
 from argparse import ArgumentParser
 from utils.loss_utils import l1_loss, ssim
 class Mapper:
+
+    def Rot2Quat(self, rot):
+        trace = rot[0][0] + rot[1][1] + rot[2][2]
+        quaternion = np.empty((1, 4), dtype=np.float32)  # xyz|w
+        if trace > 0.0:
+            s = math.sqrt(trace + 1.0)
+            quaternion[0][3] = s * 0.5
+            s = 0.5 / s
+            quaternion[0][0] = s * (rot[2][1] - rot[1][2])
+            quaternion[0][1] = s * (rot[0][2] - rot[2][0])
+            quaternion[0][2] = s * (rot[1][0] - rot[0][1])
+        else:
+            i = (2 if rot[1][1] < rot[2][2] else 1) if rot[0][0] < rot[1][1] else (2 if rot[0][0] < rot[2][2] else 0)
+            j = (i + 1) % 3
+            k = (i + 2) % 3
+            s = math.sqrt(rot[i][i] - rot[j][j] - rot[k][k] + 1.0)
+            quaternion[0][i] = s * 0.5
+            s = 0.5 / s
+            quaternion[0][3] = s * (rot[k][j] - rot[j][k])
+            quaternion[0][j] = s * (rot[j][i] + rot[i][j])
+            quaternion[0][k] = s * (rot[k][i] + rot[i][k])
+        return quaternion
+
+    def QuaternionInfo(self, quaternion):
+        axis = np.array((quaternion[0][0], quaternion[0][1], quaternion[0][2]), dtype = np.float32)
+        axis = axis / np.linalg.norm(axis)
+        angle = math.acos(quaternion[0][3]) * 2.0
+        return axis, angle
+
+    def InfoBTWQuats(self, query, ref):
+        # query x ref-1
+        quaternion = np.zeros((1, 4), dtype=np.float32)  # xyz|w
+
+        query_w = query[0][3]
+        ref_w = ref[0][3]
+
+        inv_ref = -ref[0]
+        inv_ref[3] = ref_w
+
+        inv_ref_vec = inv_ref[:3]
+        query_vec = query[0][:3]
+
+        print("inv")
+        print(inv_ref)
+        print(query[0])
+
+        cross = np.cross(query_vec, inv_ref_vec)
+
+        vec = cross + ref_w * query_vec + query_w * inv_ref_vec
+        dotpro = np.dot(query[0], inv_ref)
+
+        quaternion[0][3] = ref_w * query_w - dotpro
+        quaternion[0][:3] = vec
+
+        quaternion[0] = quaternion[0] / np.linalg.norm(quaternion[0])
+        return self.QuaternionInfo(quaternion)
+
     def __init__(self):
         self.device = "cuda"
-        self.projection_matrix = None
-        self.SetProjectionMatrix()
-        self.pipe = PipelineParams(ArgumentParser(description="Training script parameters"))
 
         # from images
         self.KF_gray_list = []
@@ -35,72 +87,37 @@ class Mapper:
         self.KF_ref_sp_3d_list = []
         self.KF_ref_sp_color_list = []
 
-        # Super pixel
-        self.sp_manager = SuperPixelManager()
-        # Gaussians
-        self.gaussian = GaussianModel(3, self.device)
-        self.background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
+        # super pixel pose
+        self.SP_pose = None
 
         self.iteration = 0
-    def SetProjectionMatrix(self):
-        fx = 535.4
-        fy = 539.2
-
-        FoVx = 2 * math.atan(640 / (2 * fx))
-        FoVy = 2 * math.atan(480 / (2 * fy))
-        self.FoVx = np.float32(FoVx)
-        self.FoVy = np.float32(FoVy)
-
-        self.projection_matrix = self.getProjectionMatrix(znear=0.01, zfar=100, fovX=FoVx, fovY=FoVy).transpose(0, 1).type(torch.FloatTensor).to(self.device)
-
-    def getProjectionMatrix(self, znear, zfar, fovX, fovY):
-        tanHalfFovY = math.tan((fovY / 2))
-        tanHalfFovX = math.tan((fovX / 2))
-
-        top = tanHalfFovY * znear
-        bottom = -top
-        right = tanHalfFovX * znear
-        left = -right
-
-        P = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
-
-        z_sign = 1.0
-
-        P[0, 0] = 2.0 * znear / (right - left)
-        P[1, 1] = 2.0 * znear / (top - bottom)
-        P[0, 2] = (right + left) / (right - left)
-        P[1, 2] = (top + bottom) / (top - bottom)
-        P[3, 2] = z_sign
-        P[2, 2] = z_sign * zfar / (zfar - znear)
-        P[2, 3] = -(zfar * znear) / (zfar - znear)
-        return P
-
     def CreateKeyframe(self, rgb, gray, KF_xyz, keyframe_pose):
         self.KF_rgb_list.append(rgb)
         self.KF_gray_list.append(gray)
         self.KF_xyz_list.append(KF_xyz)
         self.KF_pose_list.append(keyframe_pose)
-        super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
-        self.KF_superpixel_list.append(super_pixel_index)
-        sp_3d_list = []
-        sp_color_list = []
-        for sp_index in super_pixel_index:
-            int_sp_y = int(sp_index[0])
-            int_sp_x = int(sp_index[1])
-            if (int_sp_y == 0 or int_sp_x == 0 or int_sp_y == 479 or int_sp_x == 639):
-                continue
-            sp_3d_list.append(KF_xyz[int_sp_y][int_sp_x])
-            sp_color_list.append(rgb[int_sp_y][int_sp_x])
-        sp_3d_list = np.array(sp_3d_list)
-        sp_color_list = np.array(sp_color_list)
 
-        point_list_for_gaussian = self.TMPConvertCamera2World(sp_3d_list, keyframe_pose)
-        self.gaussian.AddGaussian(point_list_for_gaussian, sp_color_list)
-        self.KF_ref_sp_3d_list.append(sp_3d_list)
-        self.KF_ref_sp_color_list.append(sp_color_list)
-        # print(f"sp color: {sp_color_list.shape}")
-        # print(f"sp ga: {point_list_for_gaussian.shape}")
-        self.gaussian.InitializeOptimizer()
+        # super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
+        # self.KF_superpixel_list.append(super_pixel_index)
+        # sp_3d_list = []
+        # sp_color_list = []
+        # for sp_index in super_pixel_index:
+        #     int_sp_y = int(sp_index[0])
+        #     int_sp_x = int(sp_index[1])
+        #     if (int_sp_y == 0 or int_sp_x == 0 or int_sp_y == 479 or int_sp_x == 639):
+        #         continue
+        #     sp_3d_list.append(KF_xyz[int_sp_y][int_sp_x])
+        #     sp_color_list.append(rgb[int_sp_y][int_sp_x])
+        # sp_3d_list = np.array(sp_3d_list)
+        # sp_color_list = np.array(sp_color_list)
+        #
+        # point_list_for_gaussian = self.TMPConvertCamera2World(sp_3d_list, keyframe_pose)
+        # self.gaussian.AddGaussian(point_list_for_gaussian, sp_color_list)
+        # self.KF_ref_sp_3d_list.append(sp_3d_list)
+        # self.KF_ref_sp_color_list.append(sp_color_list)
+        # # print(f"sp color: {sp_color_list.shape}")
+        # # print(f"sp ga: {point_list_for_gaussian.shape}")
+        # self.gaussian.InitializeOptimizer()
 
     def StorPly(self, xyz_array, color_array, ply_path):
         dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
@@ -125,20 +142,6 @@ class Mapper:
         print(ply_data.elements[0])
         # pcd = fetchPly(ply_path)
         ply_data.write(ply_path)
-
-        # plydata = PlyData.read(ply_path)
-        # vertices = ply_data['vertex']
-        # positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-        # colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
-        # normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
-        # print('------v')
-        # print(vertices)
-        # print('------p')
-        # print(positions)
-        # print('------c')
-        # print(colors)
-        # print('------n')
-        # print(normals)
 
 
     def TMPBuildPointCloudAfterDone(self):
@@ -173,15 +176,16 @@ class Mapper:
 
     def Map(self, tracking_result_instance):
         if not tracking_result_instance[0]:
-            return
+            return ([False])
         rgb = tracking_result_instance[2]
         gray = tracking_result_instance[3]
         KF_xyz = tracking_result_instance[4]
         keyframe_pose = tracking_result_instance[5]
-        if not tracking_result_instance[1]:
+        if not tracking_result_instance[1]: #First KF
             # First Keyframe
             self.CreateKeyframe(rgb, gray, KF_xyz, keyframe_pose)
-            return
+            self.SP_pose = keyframe_pose
+            return ([True, False, rgb, gray, KF_xyz, keyframe_pose])
         else:
             # 이전 키프레임을 기준으로 한 point들을 저장한다.
             # 현재 키프레임과 이전 키프레임 사이에서 생성된 point들인데, origin은 이전 것을 기준으로 함.
@@ -195,83 +199,24 @@ class Mapper:
             self.KF_query_2d_list.append(query_2d_list)
             self.KF_ref_3d_list.append(ref_3d_list)
 
-            #
-            # ref_3d_list 카메라 스페이스다. 월드로 바꿔서 넣어야 함
-            # point_list_for_gaussian = self.TMPConvertCamera2World(ref_3d_list, self.KF_pose_list[-1])
-            # self.gaussian.AddGaussian(point_list_for_gaussian, ref_color_list)
             # 현 키프레임 이미지와, 새로운 pose를 저장한다.
             self.CreateKeyframe(rgb, gray, KF_xyz, keyframe_pose)
-        #
-            render_pkg = self.RenderGaussian("viz", np.eye(4))
-            img = render_pkg["render"]
-            np_render = img.permute(1, 2, 0).detach().to("cpu").numpy()
-            cv2.imshow("start_gs", np_render )
-            cv2.imshow("start", self.KF_rgb_list[0] )
-            cv2.waitKey(1)
+            if self.CheckSuperPixelFrame(keyframe_pose):
+                self.SP_pose = keyframe_pose
+                return ([True, True, rgb, gray, KF_xyz, keyframe_pose])
+            else:
+                return ([False])
 
+    def CheckSuperPixelFrame(self, pose):
+        trace = np.dot(self.SP_pose, inv(pose))
+        val = trace[0][0] + trace[1][1] + trace[2][2]
+        angle = math.acos((val-1)/2)
 
+        ref_t = self.SP_pose[:3, 3]
+        query_t = pose[:3, 3]
 
-    def RenderGaussian(self, title, pose):
-        # print(f"initial pose: {pose}")
-        # tvec = -pose[:, 3]
-        # pose[:, 3] = tvec
-        # print(f"-t pose: {pose}")
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        # print(f"cam: {camera_center}")
-        camera_center = torch.from_numpy(camera_center)
-
-
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device)
-        world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        camera_center = camera_center.type(torch.FloatTensor).to(self.device)
-
-        render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, world_view_transform, full_proj_transform, camera_center,
-                               self.gaussian, self.pipe, self.background, 1.0)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], \
-        render_pkg["visibility_filter"], render_pkg["radii"]
-        #
-        # img_rgb = image.permute(1, 2, 0).detach().to("cpu").numpy()
-        # cv2.imshow(f"gaussian_{title}", img_rgb)
-        # cv2.waitKey(1)
-
-        return render_pkg
-
-
-    def OptimizeGaussian(self):
-        if len(self.KF_pose_list) > 0:
-            self.iteration+=1
-            print(f"iter: {self.iteration} | KF cnt: {len(self.KF_pose_list)}")
-
-        # self.gaussian.update_learning_rate(self.iteration)
-
-        for i in range(len(self.KF_pose_list)):
-            pose = self.KF_pose_list[i]
-            img_gt = torch.from_numpy(self.KF_rgb_list[i]).permute(2, 0, 1).to(self.device)/255
-
-            render_pkg = self.RenderGaussian("opti", pose)
-            img = render_pkg["render"]
-            lambda_dssim = 0.2
-            #
-            # print(f"img:{torch.is_tensor(img)}")
-            # print(f"img:{img.is_leaf}")
-            # print(f"img:{img.requires_grad}")
-
-            Ll1 = l1_loss(img, img_gt)
-            loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
-            print(f"{i}th loss: {loss}")
-            loss.backward()
-            # self.gaussian.GetGradient()
-            self.gaussian.optimizer.step()
-            self.gaussian.optimizer.zero_grad(set_to_none=True)
-
-            np_gt = img_gt.permute(1, 2, 0).detach().to("cpu").numpy()
-            cv2.imshow("gt", np_gt )
-            np_render = img.permute(1, 2, 0).detach().to("cpu").numpy()
-            cv2.imshow("render", np_render )
-            cv2.waitKey(1)
-
-
+        shift = np.linalg.norm((ref_t - query_t).T)
+        if(angle > 0.5 or shift > 0.5):
+            return True
+        else:
+            return False
