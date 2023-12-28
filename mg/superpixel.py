@@ -24,12 +24,11 @@ class SuperPixelManager:
         num_slic = slic.getNumberOfSuperpixels()
 
         indices = []
-        # sample_idxs = np.random.choice(np.arange(num_slic), size=SAMPLE_SIZE, replace=False)
         for cls_lbl in range(num_slic):
             fst_cls = np.argwhere(lbls == cls_lbl)
             y, x = fst_cls[:, 0], fst_cls[:, 1] # x: 가로, y: 세로
             indices.append((y.mean(), x.mean()))
-        lsc_mask = slic.getLabelContourMask()
-        cv2.imshow("super", lsc_mask)
+        # lsc_mask = slic.getLabelContourMask()
+        # cv2.imshow("super", lsc_mask)
 
         return indices

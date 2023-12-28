@@ -10,13 +10,13 @@ import torch.multiprocessing as mp
 def PlayTumDataset(q):
     dataset = TumDataset()
     begin_index = 1
-    cnt = 1000
+    cnt = 100
     for index in range (cnt):
         rgb, gray, d = dataset.ReturnData(index + begin_index)
         # cv2.imshow("test", gray)
         # cv2.waitKey(10)
         q.put([True, rgb, gray, d])
-    q.put([False])
+    # q.put([False])
 
 def TrackingTest(img_pair_q, tracking_result_q,):
     tracker = Tracker()
@@ -31,7 +31,6 @@ def TrackingTest(img_pair_q, tracking_result_q,):
                 return
             tracking_result = tracker.Track(instance)
             if(tracking_result[0]):
-                print("tracking done")
                 tracking_result_q.put(tracking_result)
 
 def MappingTest(tracking_result_q):
@@ -43,7 +42,6 @@ def MappingTest(tracking_result_q):
                 print("Mapping Abort")
                 # mapper.TMPBuildPointCloudAfterDone()
                 return
-            print("Map")
             mapper.Map(instance)
         else:
             mapper.OptimizeGaussian()
