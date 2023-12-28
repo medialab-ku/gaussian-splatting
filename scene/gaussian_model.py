@@ -45,19 +45,37 @@ class GaussianModel:
         self.device = device
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
-        self._xyz = torch.empty(0, 3).to(device)
-        self._features_dc = torch.empty(0, 1, 3).to(device)
-        self._features_rest = torch.empty(0, 15, 3).to(device)
-        self._scaling = torch.empty(0).to(device)
-        self._rotation = torch.empty(0).to(device)
-        self._opacity = torch.empty(0).to(device)
+        self._xyz = nn.Parameter(torch.empty(0, 3).to(device).requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.empty(0, 1, 3).to(device).requires_grad_(True))
+        self._features_rest = nn.Parameter(torch.empty(0, 15, 3).to(device).requires_grad_(True))
+        self._scaling = nn.Parameter(torch.empty(0).to(device).requires_grad_(True))
+        self._rotation = nn.Parameter(torch.empty(0).to(device).requires_grad_(True))
+        self._opacity = nn.Parameter(torch.empty(0).to(device).requires_grad_(True))
+        #
+        # print("INIT")
+        # print(f'leaf xyz: {self._xyz.is_leaf}')
+        # print(f'leaf feature_dc: {self._features_dc.is_leaf}')
+        # print(f'leaf features_rest: {self._features_rest.is_leaf}')
+        # print(f'leaf scaling: {self._scaling.is_leaf}')
+        # print(f'leaf rotation: {self._rotation.is_leaf}')
+        # print(f'leaf opacity: {self._opacity.is_leaf}')
+
+        self._xyz_list = torch.empty(0, 3).to(device)
+        self._features_dc_list = torch.empty(0, 1, 3).to(device)
+        self._features_rest_list = torch.empty(0, 15, 3).to(device)
+        self._scaling_list = torch.empty(0).to(device)
+        self._rotation_list = torch.empty(0).to(device)
+        self._opacity_list = torch.empty(0).to(device)
         self.max_radii2D = torch.empty(0).to(device)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
+        self.xyz_gradient_accum = torch.empty(0).to(device)
+        self.denom = torch.empty(0).to(device)
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+
+
+
     # def __init__(self, sh_degree : int):
     #     self.active_sh_degree = 0
     #     self.max_sh_degree = sh_degree
@@ -423,8 +441,6 @@ class GaussianModel:
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
-    def InitGaussian(self, spatial_lr_scale):
-        self.spatial_lr_scale = spatial_lr_scale
 
     def AddGaussian(self, xyz_array, color_array):
         # Convert arrays into PCD
@@ -464,26 +480,109 @@ class GaussianModel:
 
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
-        xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
-        features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
-        features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
-        scaling = nn.Parameter(scales.requires_grad_(True))
-        rotation = nn.Parameter(rots.requires_grad_(True))
-        opacity = nn.Parameter(opacities.requires_grad_(True))
-        # print(f'xyz: {xyz.shape}')
-        # print(f'feature_dc: {features_dc.shape}')
-        # print(f'features_rest: {features_rest.shape}')
-        # print(f'scaling: {scaling.shape}')3
-        # print(f'rotation: {rotation.shape}')
-        # print(f'opacity: {opacity.shape}')
-        # print(f'max_radii2D: {max_radii2D.shape}')
-        self._xyz = torch.cat((self._xyz, xyz), dim = 0)
-        self._features_dc = torch.cat((self._features_dc, features_dc), dim = 0)
-        print(f"GS: {self._features_rest.shape}")
-        print(f"input: {features_rest.shape}")
-        self._features_rest = torch.cat((self._features_rest, features_rest), dim = 0)
-        self._scaling = torch.cat((self._scaling, scaling), dim = 0)
-        self._rotation = torch.cat((self._rotation, rotation), dim = 0)
-        self._opacity = torch.cat((self._opacity, opacity), dim = 0)
+        xyz = fused_point_cloud.requires_grad_(False)
+        features_dc = features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(False)
+        features_rest = features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(False)
+        scaling = scales.requires_grad_(False)
+        rotation = rots.requires_grad_(False)
+        opacity = opacities.requires_grad_(False)
+        max_radii2D = torch.zeros((xyz.shape[0]), device=self.device)
 
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.device)
+        xyz_gradient_accum = torch.zeros((xyz.shape[0], 1), device=self.device)  # Update after CreateKF
+        denom = torch.zeros((xyz.shape[0], 1), device=self.device)  # Update after CreateKF
+
+
+        self._xyz_list = torch.cat((self._xyz_list, xyz), dim=0)
+        self._features_dc_list = torch.cat((self._features_dc_list, features_dc), dim=0)
+        self._features_rest_list = torch.cat((self._features_rest_list, features_rest), dim=0)
+        self._scaling_list = torch.cat((self._scaling_list, scaling), dim=0)
+        self._rotation_list = torch.cat((self._rotation_list, rotation), dim=0)
+        self._opacity_list = torch.cat((self._opacity_list, opacity), dim=0)
+        self.max_radii2D = torch.cat((self.max_radii2D, max_radii2D), dim = 0)
+        self.xyz_gradient_accum = torch.cat((self.xyz_gradient_accum, xyz_gradient_accum), dim=0)
+        self.denom = torch.cat((self.denom, denom), dim=0)
+
+
+        self._xyz = nn.Parameter(self._xyz_list.clone().detach().requires_grad_(True))
+        self._features_dc = nn.Parameter(self._features_dc_list.clone().detach().requires_grad_(True))
+        self._features_rest = nn.Parameter(self._features_rest_list.clone().detach().requires_grad_(True))
+        self._scaling = nn.Parameter(self._scaling_list.clone().detach().requires_grad_(True))
+        self._rotation = nn.Parameter(self._rotation_list.clone().detach().requires_grad_(True))
+        self._opacity = nn.Parameter(self._opacity_list.clone().detach().requires_grad_(True))
+
+        print(f"Length of Gaussian:{self._xyz_list.shape}")
+
+
+        # print(f'xyz: {self._xyz.requires_grad}')
+        # print(f'feature_dc: {self._features_dc.requires_grad}')
+        # print(f'features_rest: {self._features_rest.requires_grad}')
+        # print(f'scaling: {self._scaling.requires_grad}')
+        # print(f'rotation: {self._rotation.requires_grad}')
+        # print(f'opacity: {self._opacity.requires_grad}')
+        # print(f'max_radii2D: {self.max_radii2D.shape}')
+
+    def SetGradient(self):
+        self._xyz.retain_grad()
+        self._features_dc.retain_grad()
+        self._features_rest.retain_grad()
+        self._scaling.retain_grad()
+        self._rotation.retain_grad()
+        self._opacity.retain_grad()
+    def GetGradient(self):
+        print("GeT Gradient")
+        print(f'grad xyz: {self._xyz.requires_grad}')
+        print(f'grad feature_dc: {self._features_dc.requires_grad}')
+        print(f'grad features_rest: {self._features_rest.requires_grad}')
+        print(f'grad scaling: {self._scaling.requires_grad}')
+        print(f'grad rotation: {self._rotation.requires_grad}')
+        print(f'grad opacity: {self._opacity.requires_grad}')
+
+        print(f'leaf xyz: {self._xyz.is_leaf}')
+        print(f'leaf feature_dc: {self._features_dc.is_leaf}')
+        print(f'leaf features_rest: {self._features_rest.is_leaf}')
+        print(f'leaf scaling: {self._scaling.is_leaf}')
+        print(f'leaf rotation: {self._rotation.is_leaf}')
+        print(f'leaf opacity: {self._opacity.is_leaf}')
+
+
+        # print(f'grad xyz: {self._xyz.grad}')
+        # print(f'grad feature_dc: {self._features_dc.grad}')
+        # print(f'grad features_rest: {self._features_rest.grad}')
+        # print(f'grad scaling: {self._scaling.grad}')
+        # print(f'grad rotation: {self._rotation.grad}')
+        # print(f'grad opacity: {self._opacity.grad}')
+
+
+
+    def InitializeOptimizer(self):
+        position_lr_init = 0.00016
+        position_lr_final = 0.0000016
+        position_lr_delay_mult = 0.01
+        position_lr_max_steps = 100  # 30_000
+        feature_lr = 0.0025
+        opacity_lr = 0.05
+        scaling_lr = 0.005
+        rotation_lr = 0.001
+        self.percent_dense = 0.01
+
+        self.lambda_dssim = 0.2
+        # self.densification_interval = 100  # 100
+        # self.opacity_reset_interval = 100  # 3000
+        # self.densify_from_iter = 15000  # 500
+        # self.densify_until_iter = 15000  # 15_000
+        # self.densify_grad_threshold = 0.0002  # 0.0002
+        # self.random_background = False
+        l = [
+            {'params': [self._xyz], 'lr': position_lr_init * self.spatial_lr_scale, "name": "xyz"},
+            {'params': [self._features_dc], 'lr': feature_lr, "name": "f_dc"},
+            {'params': [self._features_rest], 'lr': feature_lr / 20.0, "name": "f_rest"},
+            {'params': [self._opacity], 'lr': opacity_lr, "name": "opacity"},
+            {'params': [self._scaling], 'lr': scaling_lr, "name": "scaling"},
+            {'params': [self._rotation], 'lr': rotation_lr, "name": "rotation"}
+        ]
+
+        self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=position_lr_init*self.spatial_lr_scale,
+                                                    lr_final=position_lr_final*self.spatial_lr_scale,
+                                                    lr_delay_mult=position_lr_delay_mult,
+                                                    max_steps=position_lr_max_steps)

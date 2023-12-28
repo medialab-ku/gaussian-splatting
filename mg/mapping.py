@@ -40,8 +40,8 @@ class Mapper:
         # Gaussians
         self.gaussian = GaussianModel(3, self.device)
         self.background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-        # self.GaussianList
 
+        self.iteration = 0
     def SetProjectionMatrix(self):
         fx = 535.4
         fy = 539.2
@@ -98,6 +98,9 @@ class Mapper:
         self.gaussian.AddGaussian(point_list_for_gaussian, sp_color_list)
         self.KF_ref_sp_3d_list.append(sp_3d_list)
         self.KF_ref_sp_color_list.append(sp_color_list)
+        # print(f"sp color: {sp_color_list.shape}")
+        # print(f"sp ga: {point_list_for_gaussian.shape}")
+        self.gaussian.InitializeOptimizer()
 
     def StorPly(self, xyz_array, color_array, ply_path):
         dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
@@ -179,7 +182,6 @@ class Mapper:
             # First Keyframe
             self.CreateKeyframe(rgb, gray, KF_xyz, keyframe_pose)
             return
-
         else:
             # 이전 키프레임을 기준으로 한 point들을 저장한다.
             # 현재 키프레임과 이전 키프레임 사이에서 생성된 point들인데, origin은 이전 것을 기준으로 함.
@@ -193,27 +195,36 @@ class Mapper:
             self.KF_query_2d_list.append(query_2d_list)
             self.KF_ref_3d_list.append(ref_3d_list)
 
-
+            #
             # ref_3d_list 카메라 스페이스다. 월드로 바꿔서 넣어야 함
-            point_list_for_gaussian = self.TMPConvertCamera2World(ref_3d_list, self.KF_pose_list[-1])
-            self.gaussian.AddGaussian(point_list_for_gaussian, ref_color_list)
+            # point_list_for_gaussian = self.TMPConvertCamera2World(ref_3d_list, self.KF_pose_list[-1])
+            # self.gaussian.AddGaussian(point_list_for_gaussian, ref_color_list)
             # 현 키프레임 이미지와, 새로운 pose를 저장한다.
             self.CreateKeyframe(rgb, gray, KF_xyz, keyframe_pose)
+        #
+            render_pkg = self.RenderGaussian("viz", np.eye(4))
+            img = render_pkg["render"]
+            np_render = img.permute(1, 2, 0).detach().to("cpu").numpy()
+            cv2.imshow("start_gs", np_render )
+            cv2.imshow("start", self.KF_rgb_list[0] )
+            cv2.waitKey(1)
 
-            self.RenderGaussian("viz", np.eye(4))
-
-            return
 
 
     def RenderGaussian(self, title, pose):
-        pose = torch.from_numpy(pose)
-        world_view_transform = inv(pose)
-        world_view_transform.astype(np.float32)
+        # print(f"initial pose: {pose}")
+        # tvec = -pose[:, 3]
+        # pose[:, 3] = tvec
+        # print(f"-t pose: {pose}")
+        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
+        world_view_transform = inv_pose
         camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center).to(self.device)
-        world_view_transform = torch.from_numpy(world_view_transform)
+        # print(f"cam: {camera_center}")
+        camera_center = torch.from_numpy(camera_center)
+
+
         full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix.type(torch.DoubleTensor)).unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
+            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
             self.device)
         world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
         camera_center = camera_center.type(torch.FloatTensor).to(self.device)
@@ -222,75 +233,40 @@ class Mapper:
                                self.gaussian, self.pipe, self.background, 1.0)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], \
         render_pkg["visibility_filter"], render_pkg["radii"]
-
-        img_rgb = image.permute(1, 2, 0).detach().to("cpu").numpy()
-        cv2.imshow(f"gaussian_{title}", img_rgb)
-        cv2.waitKey(1)
+        #
+        # img_rgb = image.permute(1, 2, 0).detach().to("cpu").numpy()
+        # cv2.imshow(f"gaussian_{title}", img_rgb)
+        # cv2.waitKey(1)
 
         return render_pkg
-    def TMPGAUSSIANRENDER(self):
-        # Camera에서 아래 것이 만족해야한다.
-        # 아래의 네가지가 gaussian_renderer로 넘어가야함.
-        bg_color = [1, 1, 1]
-        background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-        # for i in range (len(self.KF_ref_3d_list)):
-        #     print(f'Pose: {self.KF_pose_list[i]}')
-        #     world_view_transform = inv(self.KF_pose_list[i])
-        #     world_view_transform.astype(np.float32)
-        #     camera_center = inv(world_view_transform)[3, :3]
-        #     camera_center = torch.from_numpy(camera_center).to(self.device)
-        #     world_view_transform = torch.from_numpy(world_view_transform)
-        #
-        #     full_proj_transform = (world_view_transform.unsqueeze(0).bmm((self.projection_matrix.type(torch.DoubleTensor)).unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(self.device)
-        #     world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        #     camera_center = camera_center.type(torch.FloatTensor).to(self.device)
-        #     # print(f'FoVX: {self.FoVx.dtype}')
-        #     # print(f'FoVy: {self.FoVy.dtype}')
-        #     # print(f'world_view_transform: {world_view_transform.dtype}')
-        #     # print(f'full_proj_transform: {full_proj_transform.dtype}')
-        #     # print(f'camera_center: {camera_center.dtype}')
-        #     # print(f'background: {background.dtype}')
-        #
-        #     render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, world_view_transform, full_proj_transform, camera_center, self.gaussian, self.pipe, background, 1.0)
-        #     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        #     img_rgb = image.permute(1, 2, 0).detach().to("cpu").numpy()
-        #     cv2.imshow("gaussian", img_rgb)
-        #     cv2.waitKey(1)
-
-        pose = torch.from_numpy(np.eye(4))
-        world_view_transform = inv(pose)
-        world_view_transform.astype(np.float32)
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center).to(self.device)
-        world_view_transform = torch.from_numpy(world_view_transform)
-
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm((self.projection_matrix.type(torch.DoubleTensor)).unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(self.device)
-        world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        camera_center = camera_center.type(torch.FloatTensor).to(self.device)
-        # print(f'FoVy: {self.FoVy.dtype}')
-        # print(f'world_view_transform: {world_view_transform.dtype}')
-        # print(f'full_proj_transform: {full_proj_transform.dtype}')
-        # print(f'camera_center: {camera_center.dtype}')
-        # print(f'background: {background.dtype}')
-
-        render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, world_view_transform, full_proj_transform, camera_center, self.gaussian, self.pipe, background, 1.0)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        img_rgb = image.permute(1, 2, 0).detach().to("cpu").numpy()
-        cv2.imshow("gaussian", img_rgb)
-        cv2.waitKey(1)
 
 
     def OptimizeGaussian(self):
+        if len(self.KF_pose_list) > 0:
+            self.iteration+=1
+            print(f"iter: {self.iteration} | KF cnt: {len(self.KF_pose_list)}")
+
+        # self.gaussian.update_learning_rate(self.iteration)
+
         for i in range(len(self.KF_pose_list)):
             pose = self.KF_pose_list[i]
             img_gt = torch.from_numpy(self.KF_rgb_list[i]).permute(2, 0, 1).to(self.device)/255
+
             render_pkg = self.RenderGaussian("opti", pose)
             img = render_pkg["render"]
             lambda_dssim = 0.2
+            #
+            # print(f"img:{torch.is_tensor(img)}")
+            # print(f"img:{img.is_leaf}")
+            # print(f"img:{img.requires_grad}")
 
             Ll1 = l1_loss(img, img_gt)
             loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
+            print(f"{i}th loss: {loss}")
             loss.backward()
+            # self.gaussian.GetGradient()
+            self.gaussian.optimizer.step()
+            self.gaussian.optimizer.zero_grad(set_to_none=True)
 
             np_gt = img_gt.permute(1, 2, 0).detach().to("cpu").numpy()
             cv2.imshow("gt", np_gt )
