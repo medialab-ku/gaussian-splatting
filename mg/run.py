@@ -11,8 +11,8 @@ import torch.multiprocessing as mp
 def PlayTumDataset(q):
     dataset = TumDataset()
     begin_index = 1
-    cnt = 1000
-    for index in range (cnt):
+    cnt = 1600
+    for index in range(cnt):
         rgb, gray, d = dataset.ReturnData(index + begin_index)
         # cv2.imshow("test", gray)
         # cv2.waitKey(10)
@@ -50,6 +50,7 @@ def MappingTest(tracking_result_q, mapping_result_q):
 
 def GaussianMappingTest(mapping_result_q):
     gaussian_mapper = GaussianMapper()
+    viz_iter = 0
     while True:
         if not mapping_result_q.empty():
             instance = mapping_result_q.get()
@@ -57,9 +58,12 @@ def GaussianMappingTest(mapping_result_q):
                 print("Gaussian Mapping Abort")
                 return
             gaussian_mapper.GaussianMap(instance)
-        else:
-            gaussian_mapper.OptimizeGaussian()
-        gaussian_mapper.Visualize([])
+        # else:
+        gaussian_mapper.OptimizeGaussian()
+        # viz_iter+=1
+        if(viz_iter > 50):
+            viz_iter = 0
+        gaussian_mapper.Visualize()
 
 
 

@@ -425,15 +425,17 @@ class GaussianModel:
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
+        print(f"1 densify: {self._xyz.shape}")
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
-
+        print(f"3 densify: {self._xyz.shape}")
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.4 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
+        print(f"4 densify: {self._xyz.shape}")
 
         torch.cuda.empty_cache()
 
@@ -474,30 +476,31 @@ class GaussianModel:
         # print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(positions)).float().cuda()), 0.0000001)
+        # print(dist2)
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
-        xyz = fused_point_cloud.requires_grad_(False)
-        features_dc = features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(False)
-        features_rest = features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(False)
-        scaling = scales.requires_grad_(False)
-        rotation = rots.requires_grad_(False)
-        opacity = opacities.requires_grad_(False)
+        xyz = fused_point_cloud
+        features_dc = features[:, :, 0:1].transpose(1, 2).contiguous()
+        features_rest = features[:, :, 1:].transpose(1, 2).contiguous()
+        scaling = scales
+        rotation = rots
+        opacity = opacities
         max_radii2D = torch.zeros((xyz.shape[0]), device=self.device)
 
         xyz_gradient_accum = torch.zeros((xyz.shape[0], 1), device=self.device)  # Update after CreateKF
         denom = torch.zeros((xyz.shape[0], 1), device=self.device)  # Update after CreateKF
 
 
-        self._xyz_list = torch.cat((self._xyz_list, xyz), dim=0)
-        self._features_dc_list = torch.cat((self._features_dc_list, features_dc), dim=0)
-        self._features_rest_list = torch.cat((self._features_rest_list, features_rest), dim=0)
-        self._scaling_list = torch.cat((self._scaling_list, scaling), dim=0)
-        self._rotation_list = torch.cat((self._rotation_list, rotation), dim=0)
-        self._opacity_list = torch.cat((self._opacity_list, opacity), dim=0)
+        self._xyz_list = torch.cat((self._xyz, xyz), dim=0)
+        self._features_dc_list = torch.cat((self._features_dc, features_dc), dim=0)
+        self._features_rest_list = torch.cat((self._features_rest, features_rest), dim=0)
+        self._scaling_list = torch.cat((self._scaling, scaling), dim=0)
+        self._rotation_list = torch.cat((self._rotation, rotation), dim=0)
+        self._opacity_list = torch.cat((self._opacity, opacity), dim=0)
         self.max_radii2D = torch.cat((self.max_radii2D, max_radii2D), dim = 0)
         self.xyz_gradient_accum = torch.cat((self.xyz_gradient_accum, xyz_gradient_accum), dim=0)
         self.denom = torch.cat((self.denom, denom), dim=0)
@@ -513,21 +516,7 @@ class GaussianModel:
         print(f"Length of Gaussian:{self._xyz_list.shape}")
 
 
-        # print(f'xyz: {self._xyz.requires_grad}')
-        # print(f'feature_dc: {self._features_dc.requires_grad}')
-        # print(f'features_rest: {self._features_rest.requires_grad}')
-        # print(f'scaling: {self._scaling.requires_grad}')
-        # print(f'rotation: {self._rotation.requires_grad}')
-        # print(f'opacity: {self._opacity.requires_grad}')
-        # print(f'max_radii2D: {self.max_radii2D.shape}')
 
-    def SetGradient(self):
-        self._xyz.retain_grad()
-        self._features_dc.retain_grad()
-        self._features_rest.retain_grad()
-        self._scaling.retain_grad()
-        self._rotation.retain_grad()
-        self._opacity.retain_grad()
     def GetGradient(self):
         print("GeT Gradient")
         print(f'grad xyz: {self._xyz.requires_grad}')
