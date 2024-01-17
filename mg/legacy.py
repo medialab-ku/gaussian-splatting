@@ -2,6 +2,9 @@ def StorPly(self, xyz_array, color_array, ply_path):
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
              ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
              ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    # xyz_array: N x 3
+    # color_array: N x 3
+
     normals = np.zeros_like(xyz_array)
     color_list = color_array
 
@@ -26,8 +29,8 @@ def StorPly(self, xyz_array, color_array, ply_path):
 def TMPBuildPointCloudAfterDone(self):
     path = "c:/lab/research/dataset/ply_test/"
     print(f'Pose: {len(self.KF_pose_list)} 3D: {len(self.KF_ref_3d_list)} Color: {len(self.KF_ref_color_list)}')
-    pointcloud_xyz = np.empty((0, 3))
-    pointcloud_rgb = np.empty((0, 3))
+    pointcloud_xyz = np.empty((0, 3))  # N x 3
+    pointcloud_rgb = np.empty((0, 3))  # N x 3
     for i in range(len(self.KF_ref_3d_list)):
         pose = self.KF_pose_list[i]
         point_3d_list = self.KF_ref_3d_list[i]

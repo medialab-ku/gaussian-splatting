@@ -1,40 +1,48 @@
 
-from plyfile import PlyData, PlyElement
+# from plyfile import PlyData, PlyElement
 import cv2
 import math
 import numpy as np
 import torch
 from numpy.linalg import inv
-from scene import Scene, GaussianModel
+from scene import GaussianModel
 from superpixel import SuperPixelManager
-import collections
-from scene.cameras import Camera
 from arguments import PipelineParams
 from gaussian_renderer import mg_render
 from argparse import ArgumentParser
 from utils.loss_utils import l1_loss, ssim
-import datetime
 
 class GaussianMapper:
     def __init__(self):
+        self.width = 640
+        self.height = 480
         self.device = "cuda"
-        self.projection_matrix = None
+        with torch.no_grad():
+            self.projection_matrix = None
+            self.FoVx = None
+            self.FoVy = None
+            self.intr = torch.zeros((3, 3), dtype=torch.float32, device=self.device)
+            self.inv_intr = torch.zeros((3, 3), dtype=torch.float32, device=self.device)
+            self.recover = None
+            self.uv_mid = None
         self.SetProjectionMatrix()
         self.pipe = PipelineParams(ArgumentParser(description="Training script parameters"))
 
-        self.intr = np.zeros((3, 3), dtype=np.float32)
         self.SetIntrinsics()
+        self.SetSPMaskPoints()
         self.full_proj_transform_list = []
         self.world_view_transform_list = []
         self.camera_center_list = []
 
         # from images
-        self.SP_gray_list = []
         self.SP_rgb_list = []
         self.SP_img_gt_list = []
         self.SP_xyz_list = []  # Converted from Depth map
-        self.SP_pose_list = []  #
         self.SP_superpixel_list = []
+        self.iteration_frame = []
+
+        with torch.no_grad():
+            self.SP_poses = torch.empty((4, 4, 0), dtype=torch.float32, device=self.device)
 
         # points (2D, 3D)
         self.SP_ref_3d_list = []
@@ -45,14 +53,19 @@ class GaussianMapper:
         self.sp_manager = SuperPixelManager()
         # Gaussians
         self.gaussian = GaussianModel(3, self.device)
-        self.background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
+        with torch.no_grad():
+            self.background = torch.tensor([1, 1, 1], dtype=torch.float32, device=self.device)
+            #Mask
         self.cam_centers = []
         self.cameras_extent = 0
         self.size_threshold = 20
-        self.densify_grad_threshold = 0.001
+        self.densify_grad_threshold = 0.0001
         self.loss_threshold = 0.1
 
+
+
         self.iteration = 1
+        self.densification_interval = 1
         # viz
         self.viz_full_proj_transform_list = []
         self.viz_world_view_transform_list = []
@@ -73,16 +86,34 @@ class GaussianMapper:
         self.intr[1][1] = fy
         self.intr[1][2] = cy
         self.intr[2][2] = 1
+
+        self.inv_intr[0][0] = 1 / fx
+        self.inv_intr[0][2] = -cx / fx
+        self.inv_intr[1][1] = 1 / fy
+        self.inv_intr[1][2] = -cy / fy
+        self.inv_intr[2][2] = 1
+
+    def SetSPMaskPoints(self):
+        with torch.no_grad():
+            mid_xyz = torch.zeros((3, 1), dtype=torch.float32, device=self.device)
+            mid_xyz[2] = 5
+            uv_mid = torch.matmul(self.intr, mid_xyz)
+            self.uv_mid = uv_mid/uv_mid[2, :]
+            self.recover = torch.zeros((4, 1),dtype=torch.float32, device=self.device)
+            self.recover[2] = 10.0
+            self.recover[3] = 1.0
+
     def SetProjectionMatrix(self):
         fx = 535.4
         fy = 539.2
 
         FoVx = 2 * math.atan(640 / (2 * fx))
         FoVy = 2 * math.atan(480 / (2 * fy))
-        self.FoVx = np.float32(FoVx)
-        self.FoVy = np.float32(FoVy)
+        with torch.no_grad():
+            self.FoVx = torch.tensor(FoVx, dtype=torch.float32, device=self.device)
+            self.FoVy = torch.tensor(FoVy, dtype=torch.float32, device=self.device)
 
-        self.projection_matrix = self.getProjectionMatrix(znear=0.01, zfar=100, fovX=FoVx, fovY=FoVy).transpose(0, 1).type(torch.FloatTensor).to(self.device)
+            self.projection_matrix = self.getProjectionMatrix(znear=0.01, zfar=100, fovX=FoVx, fovY=FoVy).transpose(0, 1).type(torch.FloatTensor).to(self.device)
 
     def getProjectionMatrix(self, znear, zfar, fovX, fovY):
         tanHalfFovY = math.tan((fovY / 2))
@@ -93,17 +124,18 @@ class GaussianMapper:
         right = tanHalfFovX * znear
         left = -right
 
-        P = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            P = torch.zeros(4, 4, dtype=torch.float32, device=self.device)
 
-        z_sign = 1.0
+            z_sign = 1.0
 
-        P[0, 0] = 2.0 * znear / (right - left)
-        P[1, 1] = 2.0 * znear / (top - bottom)
-        P[0, 2] = (right + left) / (right - left)
-        P[1, 2] = (top + bottom) / (top - bottom)
-        P[3, 2] = z_sign
-        P[2, 2] = z_sign * zfar / (zfar - znear)
-        P[2, 3] = -(zfar * znear) / (zfar - znear)
+            P[0, 0] = 2.0 * znear / (right - left)
+            P[1, 1] = 2.0 * znear / (top - bottom)
+            P[0, 2] = (right + left) / (right - left)
+            P[1, 2] = (top + bottom) / (top - bottom)
+            P[3, 2] = z_sign
+            P[2, 2] = z_sign * zfar / (zfar - znear)
+            P[2, 3] = -(zfar * znear) / (zfar - znear)
         return P
 
     def getNerfppNorm(self, pose):
@@ -115,7 +147,7 @@ class GaussianMapper:
             diagonal = np.max(dist)
             return center.flatten(), diagonal
 
-        cam_center = pose[:3, 3:4]
+        cam_center = pose[:3, 3:4].detach().cpu().numpy()
         self.cam_centers.append(cam_center)
 
         center, diagonal = get_center_and_diag()
@@ -125,337 +157,363 @@ class GaussianMapper:
         self.cameras_extent = radius
         return {"translate": translate, "radius": radius}
 
-    def TMPConvertCamera2World(self, point_3d_list, pose):
-        pointcloud_xyz = np.empty((0, 3), dtype=np.float32)
-        ones_list = np.expand_dims(np.ones(point_3d_list.shape[0], dtype=np.float32), axis=1)
-        point_3d_list = np.concatenate((point_3d_list, ones_list), axis=1)
-        point_3d_list = np.matmul(point_3d_list, pose.T)  # Transpose!
-        point_3d_list = point_3d_list[:, :] / point_3d_list[:, [-1]]
+    def TMPConvertCamera2World(self, xyz, pose):
+        with torch.no_grad():
+            ones = torch.ones((1, xyz.shape[1]), dtype=torch.float32, device=self.device)
+            xyz_one = torch.cat((xyz, ones), dim=0)
+            world_xyz = torch.matmul(pose, xyz_one)
 
-        pointcloud_xyz = np.concatenate((pointcloud_xyz, point_3d_list[:, :3]), axis=0)
-        return pointcloud_xyz
+            xyz_mask = world_xyz[3, :].ne(0.0)
+            masked_world_xyz = world_xyz[:, xyz_mask]
 
-    def CreateInitialKeyframe(self, rgb, gray, SP_xyz, pose):
-        img_gt = (torch.from_numpy(rgb).permute(2, 0, 1)/255).to(self.device)
-        self.SP_rgb_list.append(rgb)
-        self.SP_gray_list.append(gray)
-        self.SP_xyz_list.append(SP_xyz)
-        self.SP_pose_list.append(pose)
-        self.SP_img_gt_list.append(img_gt)
-        super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
-        sp_3d_list = []
-        sp_2d_list = []
-        sp_color_list = []
-        for sp_index in super_pixel_index:
-            int_sp_y = int(sp_index[0])
-            int_sp_x = int(sp_index[1])
-            if (int_sp_y == 0 or int_sp_x == 0 or int_sp_y == 479 or int_sp_x == 639):
-                continue
-            sp_2d_list.append([int_sp_y, int_sp_x])
-            sp_3d_list.append(SP_xyz[int_sp_y][int_sp_x])
-            sp_color_list.append(rgb[int_sp_y][int_sp_x])
+            masked_world_xyz = masked_world_xyz[:, :] / masked_world_xyz[3, :]
 
-        sp_2d_list = np.array(sp_2d_list)
-        sp_3d_list = np.array(sp_3d_list)
-        sp_color_list = np.array(sp_color_list)
-        z_mask_0 = sp_3d_list[:, 2] > 0.2
-        sp_3d_list = sp_3d_list[z_mask_0]
-        sp_2d_list = sp_2d_list[z_mask_0]
-        sp_color_list = sp_color_list[z_mask_0]
-        # self.SP_superpixel_list.append(sp_2d_list)
-
-
-
-        point_list_for_gaussian = self.TMPConvertCamera2World(sp_3d_list, pose)
-        self.gaussian.AddGaussian(point_list_for_gaussian, sp_color_list)
-        self.SP_global_3d_list.append(point_list_for_gaussian)
-
-
-        # self.SP_ref_3d_list.append(sp_3d_list)
-        # self.SP_ref_color_list.append(sp_color_list)
-
-        # pre-compute poses
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
-
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device)
-        world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        camera_center = camera_center.type(torch.FloatTensor).to(self.device)
-
-        self.full_proj_transform_list.append(full_proj_transform)
-        self.world_view_transform_list.append(world_view_transform)
-        self.camera_center_list.append(camera_center)
-
-        # Gaussian
-        self.gaussian.InitializeOptimizer()
+        return masked_world_xyz
 
     def SetVizParams(self):
-        # pose = np.eye(4)
-        # pose[2, 3] = 3
-        # pose[0, 3] = -4
-        #
-        # pose[0, 0] = 0
-        # pose[0, 2] = 1
-        # pose[2, 0] = -1
-        # pose[2, 2] = 0
-        # # pre-compute poses
-        # inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        # world_view_transform = inv_pose
-        # camera_center = inv(world_view_transform)[3, :3]
-        # camera_center = torch.from_numpy(camera_center)
-        #
-        # self.viz_full_proj_transform_list.append((world_view_transform.unsqueeze(0).bmm(
-        #     (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
+        with torch.no_grad():
+            pose = torch.eye(4, dtype=torch.float32, device=self.device)
+            camera_center = pose[3, :3].detach()
+            world_view_transform = torch.inverse(pose).detach()
+            full_proj_transform = torch.matmul(world_view_transform, self.projection_matrix)
+
+        # self.viz_full_proj_transform_list.append((world_view_transform.detach().cpu().unsqueeze(0).bmm(
+        #     (self.projection_matrix).detach().cpu().unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
         #     self.device))
-        # self.viz_world_view_transform_list.append(world_view_transform.type(torch.FloatTensor).to(self.device))
-        # self.viz_camera_center_list.append(camera_center.type(torch.FloatTensor).to(self.device))
-        #
-        #
-        #
-        pose = np.eye(4)
-        # pre-compute poses
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
+        self.viz_full_proj_transform_list.append(full_proj_transform.detach())
+        self.viz_world_view_transform_list.append(world_view_transform.detach())
+        self.viz_camera_center_list.append(camera_center.detach())
 
-        self.viz_full_proj_transform_list.append((world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
+
+        with torch.no_grad():
+            pose2 = torch.eye(4, dtype=torch.float32, device=self.device)
+            pose2[2, 3] = 4.8
+            pose2[1, 3] = -3.6
+
+            pose2[0, 0] = -1
+            pose2[1, 1] = 0.5
+            pose2[1, 2] = 0.866
+            pose2[2, 1] = 0.866
+            pose2[2, 2] = -0.5
+
+
+            camera_center2 = pose2.T[3, :3].detach()
+            world_view_transform2 = torch.inverse(pose2).T.detach()
+            full_proj_transform2 = torch.matmul(world_view_transform2, self.projection_matrix)
+            # self.viz_full_proj_transform_list.append((world_view_transform2.detach().cpu().unsqueeze(0).bmm(
+            #     (self.projection_matrix).detach().cpu().unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
+            #     self.device))
+        self.viz_full_proj_transform_list.append(full_proj_transform2.detach())
+        self.viz_world_view_transform_list.append(world_view_transform2.detach())
+        self.viz_camera_center_list.append(camera_center2.detach())
+
+        with torch.no_grad():
+            pose = torch.eye(4, dtype=torch.float32, device=self.device)
+            pose[2, 3] = -5
+            pose[1, 3] = -0.5
+            camera_center = pose.T[3, :3].detach()
+            world_view_transform = torch.inverse(pose).T.detach()
+        self.viz_full_proj_transform_list.append((world_view_transform.detach().cpu().unsqueeze(0).bmm(
+            (self.projection_matrix).detach().cpu().unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
             self.device))
-        self.viz_world_view_transform_list.append(world_view_transform.type(torch.FloatTensor).to(self.device))
-        self.viz_camera_center_list.append(camera_center.type(torch.FloatTensor).to(self.device))
-        #
-        #
-        pose = np.eye(4)
-        pose[2, 3] = 6
-        pose[1, 3] = -4.5
+        self.viz_world_view_transform_list.append(world_view_transform.detach())
+        self.viz_camera_center_list.append(camera_center.detach())
 
-        pose[0, 0] = -1
-        pose[1, 1] = 0.5
-        pose[1, 2] = 0.866
-        pose[2, 1] = 0.866
-        pose[2, 2] = -0.5
+    def CreateInitialKeyframe(self, rgb, SP_xyz, pose):
+        with torch.no_grad():
+            rgb_torch = torch.from_numpy(rgb).to(self.device)
+            img_gt = torch.permute(rgb_torch.type(torch.FloatTensor), (2, 0, 1)).to(self.device) / 255.0
 
-        # pre-compute poses
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
-
-        self.viz_full_proj_transform_list.append((world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device))
-        self.viz_world_view_transform_list.append(world_view_transform.type(torch.FloatTensor).to(self.device))
-        self.viz_camera_center_list.append(camera_center.type(torch.FloatTensor).to(self.device))
-
-        pose = np.eye(4)
-        pose[2, 3] = -5
-        pose[1, 3] = -0.5
-        # pre-compute poses
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
-
-        self.viz_full_proj_transform_list.append((world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device))
-        self.viz_world_view_transform_list.append(world_view_transform.type(torch.FloatTensor).to(self.device))
-        self.viz_camera_center_list.append(camera_center.type(torch.FloatTensor).to(self.device))
+            self.SP_poses = torch.cat((self.SP_poses, pose.unsqueeze(dim=2)), dim=2)
+            super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
+            mask = super_pixel_index[0, :].gt(0)
+            masked_index = super_pixel_index[:, mask]
+            mask = masked_index[1, :].gt(0)
+            masked_index = masked_index[:, mask]
+            mask = masked_index[0, :].lt(self.height-1)
+            masked_index = masked_index[:, mask]
+            mask = masked_index[1, :].lt(self.width-1)
+            masked_index = masked_index[:, mask]
 
 
 
-    def CreateKeyframe(self, rgb, gray, SP_xyz, pose, ref_3d_list, ref_color_list):
-        self.gaussian.AddGaussian(ref_3d_list, ref_color_list)
+            masked_xyz = SP_xyz[masked_index[0, :], masked_index[1, :], :].T
+            masked_rgb = rgb_torch[masked_index[0, :], masked_index[1, :], :]
 
-        min_u = 640  # x
-        min_v = 480  # y
-        max_u = 0
-        max_v = 0
-        previous_SP_3d = self.TMPConvertCamera2World(self.SP_global_3d_list[-1], inv(pose))
-        uv = np.dot(previous_SP_3d, self.intr.T)
-        uv = uv[:, :]/ uv[:, [-1]]
+            mask = masked_xyz[2, :].gt(0.2)
+            masked_xyz = masked_xyz[:, mask]
+            masked_rgb = masked_rgb[mask, :]
 
-        for uv_element in uv:
-            if uv_element[0] < min_u:
-                min_u = uv_element[0]
-            if uv_element[1] < min_v:
-                min_v = uv_element[1]
-            if uv_element[0] > max_u:
-                max_u = uv_element[0]
-            if uv_element[1] > max_v:
-                max_v = uv_element[1]
-
-        w = max_u - min_u
-        w_padding = (w * 0.15)
-        h = max_v - min_v
-        h_padding = h * 0.15
-        min_u += w_padding
-        max_u -= w_padding
-        min_v += h_padding
-        max_v -= h_padding
-
-        if min_u < 0:
-            min_u = 0
-        if min_v < 0:
-            min_v = 0
-        if max_u > 639:
-            max_u = 639
-        if max_v > 479:
-            max_v = 479
-        img_gt = (torch.from_numpy(rgb).permute(2, 0, 1)/255).to(self.device)
-        self.SP_rgb_list.append(rgb)
-        self.SP_gray_list.append(gray)
-        self.SP_xyz_list.append(SP_xyz)
-        self.SP_pose_list.append(pose)
-        self.SP_img_gt_list.append(img_gt)
+            point_list_for_gaussian = self.TMPConvertCamera2World(masked_xyz, pose)
+            del masked_index
+            del masked_xyz
 
 
-        super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
-        # self.SP_superpixel_list.append(super_pixel_index)
-        sp_3d_total_list = []
-        sp_3d_list = []
-        sp_color_list = []
-        for sp_index in super_pixel_index:
-            int_sp_y = int(sp_index[0])
-            int_sp_x = int(sp_index[1])
-            if (int_sp_y > max_v or int_sp_x > max_u or int_sp_y < min_v or int_sp_x < min_u):
-                sp_3d_list.append(SP_xyz[int_sp_y][int_sp_x])
-                sp_color_list.append(rgb[int_sp_y][int_sp_x])
-                sp_3d_total_list.append(SP_xyz[int_sp_y][int_sp_x])
-            elif (int_sp_y == 0 or int_sp_x == 0 or int_sp_y == 479 or int_sp_x == 639):
-                continue
-            else:
-                sp_3d_total_list.append(SP_xyz[int_sp_y][int_sp_x])
-        sp_3d_list = np.array(sp_3d_list)
-        sp_color_list = np.array(sp_color_list)
-        sp_3d_total_list = np.array(sp_3d_total_list)
-        global_sp_3d_total = self.TMPConvertCamera2World(sp_3d_total_list, pose)
-        self.SP_global_3d_list.append(global_sp_3d_total)
-
-        if sp_3d_list.shape[0] > 0:
-            z_mask_0 = sp_3d_list[:, 2] > 0.2
-            sp_3d_list = sp_3d_list[z_mask_0]
-            sp_color_list = sp_color_list[z_mask_0]
-            point_list_for_gaussian = self.TMPConvertCamera2World(sp_3d_list, pose)
-            self.gaussian.AddGaussian(point_list_for_gaussian, sp_color_list)
         # self.SP_ref_3d_list.append(sp_3d_list)
         # self.SP_ref_color_list.append(sp_color_list)
 
         # pre-compute poses
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
+            world_view_transform = torch.inverse(pose).T.detach()
+            camera_center = torch.inverse(world_view_transform)[3, :3]
+        # print(f"bmm: {world_view_transform.unsqueeze(0).shape}, {self.projection_matrix.detach().cpu().unsqueeze(0).shape}")
+        # full_proj_transform = world_view_transform.unsqueeze(0).cpu().bmm((self.projection_matrix).detach().cpu().unsqueeze(0))
+        # print(f"full_proj_transform {full_proj_transform.shape}")
+        # full_proj_transform = full_proj_transform.squeeze(0).to(self.device)
+        # print(f"full_proj_transform squ {full_proj_transform.shape}")
+            full_proj_transform = torch.matmul(world_view_transform, self.projection_matrix)
+        # world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
+        # camera_center = camera_center.type(torch.FloatTensor).to(self.device)
 
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device)
-        world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        camera_center = camera_center.type(torch.FloatTensor).to(self.device)
+        self.gaussian.AddGaussian(point_list_for_gaussian[:3, :], masked_rgb, len(self.SP_img_gt_list))
+        del masked_rgb
+        self.SP_global_3d_list.append(point_list_for_gaussian[:3, :])
+        self.SP_img_gt_list.append(img_gt)
 
-        self.full_proj_transform_list.append(full_proj_transform)
-        self.world_view_transform_list.append(world_view_transform)
-        self.camera_center_list.append(camera_center)
+        self.full_proj_transform_list.append(full_proj_transform.detach())
+        self.world_view_transform_list.append(world_view_transform.detach())
+        self.camera_center_list.append(camera_center.detach())
+        self.iteration_frame.append(0)
+        del full_proj_transform
+        del world_view_transform
+        del camera_center
 
         # Gaussian
         self.gaussian.InitializeOptimizer()
 
 
 
-    def RenderGaussian(self, title, pose):
-        inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
-        world_view_transform = inv_pose
-        camera_center = inv(world_view_transform)[3, :3]
-        camera_center = torch.from_numpy(camera_center)
 
-        full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
-            (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
-            self.device)
-        world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
-        camera_center = camera_center.type(torch.FloatTensor).to(self.device)
+    def CreateKeyframe(self, rgb, SP_xyz, pose):
+        print("KFrame")
+        w_padding = 100
+        h_padding = 50
 
-        render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, world_view_transform, full_proj_transform, camera_center, self.gaussian, self.pipe, self.background, 1.0)
-        # image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], \
-        # render_pkg["visibility_filter"], render_pkg["radii"]
+        min_u = 0
+        min_v = 0
+        max_u = 0
+        max_v = 0
 
-        return render_pkg
+        with torch.no_grad():
+            prev_pose = self.SP_poses[:, :, -1]
+            tvec = pose[:3, 3] - prev_pose[:3, 3]
+            rot =  torch.matmul(pose[:3, :3], (prev_pose[:3, :3]).T)
+            relativepose = torch.eye((4), dtype=torch.float32, device=self.device)
+            relativepose[:3, :3] = rot
+            relativepose[:3, 3] = tvec
+            relative_points = torch.matmul(relativepose, self.recover.detach())[:3, :]
+            uv = torch.matmul(self.intr, relative_points)
+            uv = uv[:, :] / uv[2, :]
+            diff = uv - self.uv_mid
+            if diff[0] > 0:  # 카메라가 왼쪽으로 움직였음
+                min_u = 0
+                max_u = w_padding + diff[0]
+            else:  # 카메라가 오른쪽으로 움직였음
+                min_u = self.width -1 - w_padding + diff[0]
+                max_u = self.width - 1
+            if diff[1] > 0:  # 카메라가 위로 움직였음
+                min_v = 0
+                max_v = h_padding + diff[1]
+            else:  # 카메라가 아래로 움직였음
+                min_v = self.height - 1 - h_padding + diff[1]
+                max_v = self.height - 1
+
+            # 이전 프레임에서의 pointcloud를 현재 프레임에 projection하고, BB를 만들었음
+            rgb_torch = torch.from_numpy(rgb).detach().to(self.device)
+            img_gt = torch.permute(rgb_torch.type(torch.FloatTensor), (2, 0, 1)).to(self.device)/255.0
+
+            super_pixel_index = self.sp_manager.ComputeSuperPixel(rgb)
+            mask_min_u = super_pixel_index[1, :].ge(min_u)
+            mask_max_u = super_pixel_index[1, :].le(max_u)
+            mask_min_v = super_pixel_index[0, :].ge(min_v)
+            mask_max_v = super_pixel_index[0, :].le(max_v)
+            mask = torch.logical_or(torch.logical_and(mask_min_u, mask_max_u),
+                                    torch.logical_and(mask_min_v, mask_max_v))
+            masked_index = super_pixel_index[:, mask]
+            #
+            # mask = super_pixel_index[0, :].ge(0)
+            # masked_index = super_pixel_index[:, mask]
+            # mask = masked_index[1, :].ge(0)
+            # masked_index = masked_index[:, mask]
+            # mask = masked_index[0, :].le(self.height-1)
+            # masked_index = masked_index[:, mask]
+            # mask = masked_index[1, :].le(self.width-1)
+            # masked_index = masked_index[:, mask]
+            masked_xyz = SP_xyz[masked_index[0, :], masked_index[1, :], :].T
+            masked_rgb = rgb_torch[masked_index[0, :], masked_index[1, :], :]
+
+            mask = masked_xyz[2, :].gt(0.2)
+            masked_xyz = masked_xyz[:, mask]
+            masked_rgb = masked_rgb[mask, :]
+
+
+
+        if masked_xyz.shape[1] > 0:
+            with torch.no_grad():
+                point_list_for_gaussian = self.TMPConvertCamera2World(masked_xyz, (pose))
+
+            self.gaussian.AddGaussian(point_list_for_gaussian[:3, :], masked_rgb, len(self.SP_img_gt_list)+1)
+            self.SP_global_3d_list.append(point_list_for_gaussian[:3, :])
+        with torch.no_grad():
+            world_view_transform = torch.inverse(pose).T.detach()
+            camera_center = torch.inverse(world_view_transform)[3, :3]
+            full_proj_transform = torch.matmul(world_view_transform, self.projection_matrix)
+            self.SP_poses = torch.cat((self.SP_poses, pose.unsqueeze(dim=2)), dim=2)
+        # print(f"bmm: {world_view_transform.unsqueeze(0).shape}, {self.projection_matrix.detach().cpu().unsqueeze(0).shape}")
+
+        # full_proj_transform = world_view_transform.unsqueeze(0).cpu().bmm((self.projection_matrix).detach().cpu().unsqueeze(0))
+        # print(f"full_proj_transform {full_proj_transform.shape}")
+        # full_proj_transform = full_proj_transform.squeeze(0).to(self.device)
+        # print(f"full_proj_transform squ {full_proj_transform.shape}")
+
+        self.SP_img_gt_list.append(img_gt)
+        self.full_proj_transform_list.append(full_proj_transform.detach())
+        self.world_view_transform_list.append(world_view_transform.detach())
+        self.camera_center_list.append(camera_center.detach())
+        self.iteration_frame.append(0)
+
+        # Gaussian
+        self.gaussian.InitializeOptimizer()
+
+
+
+
 
 
     def OptimizeGaussian(self):
         lambda_dssim = 0.2
-        # if len(self.SP_pose_list) > 0:
-        #     self.iteration+=1
+        if self.SP_poses.shape[2] > 0:
+            self.iteration+=1
+            print("OPTIMIZE")
 
         # self.gaussian.update_learning_rate(self.iteration)
-        flag = True
-        for i in range(len(self.SP_pose_list)):
-            #print(1, datetime.datetime.now().strftime("%H:%M:%S.%f"))
-            img_gt = self.SP_img_gt_list[i]
-            world_view_transform = self.world_view_transform_list[i]
-            full_proj_transform = self.full_proj_transform_list[i]
-            camera_center = self.camera_center_list[i]
-            render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, world_view_transform, full_proj_transform,
-                                   camera_center, self.gaussian, self.pipe, self.background, 1.0)
+        optimization_i_threshold = 50
+        for optimization_i in range(optimization_i_threshold):
+            self.densification_interval += 1
+            for i in range(self.SP_poses.shape[2]):
+                self.iteration_frame[i] += 1
+                img_gt = self.SP_img_gt_list[i].detach()
+                with torch.no_grad():
+                    world_view_transform = self.world_view_transform_list[i]
+                    full_proj_transform = self.full_proj_transform_list[i]
+                    camera_center = self.camera_center_list[i]
+                render_pkg = mg_render(self.FoVx, self.FoVy, self.height, self.width, world_view_transform,
+                                       full_proj_transform, camera_center, self.gaussian, self.pipe, self.background, 1.0)
 
-            img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                #
+                img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                # np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
+                # cv2.imshow(f"iter{i}", np_render)
+                # cv2.waitKey(1)
 
+                Ll1 = l1_loss(img, img_gt)
+                loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
+                # print(f"{optimization_i}th iter, {i}th kf, loss: {loss}")
+                # if(loss < self.loss_threshold):
+                #     flag = False
+                #     print(f"loss upgrade: {self.loss}")
+                #     continue
 
-            Ll1 = l1_loss(img, img_gt)
-            loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
-            print(f"{self.iteration}th iter, {i}th kf, loss: {loss}")
-            if(loss < self.loss_threshold):
-                flag = False
-                print(f"loss upgrade: {self.loss}")
-                continue
+                loss.backward()
 
-            self.iteration+=1
-            loss.backward()
+                self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
+                                                                     radii[visibility_filter])
+                self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                if self.densification_interval >20 and self.iteration_frame[i] > 100:
+                    self.densification_interval = 0
+                    self.iteration_frame[i] = 0
+                    # print("prune begins")
+                    self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent, self.size_threshold)
+                    # print("prune ends")
 
-            self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
-                                                                 radii[visibility_filter])
-            self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                self.gaussian.optimizer.step()
+                self.gaussian.optimizer.zero_grad(set_to_none=True)
+                del img
+                torch.cuda.empty_cache()
 
-            if self.iteration%80 == 0:
-                self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent, self.size_threshold)
-
-            self.gaussian.optimizer.step()
-            self.gaussian.optimizer.zero_grad(set_to_none=True)
-
-        if flag:
-            self.loss_threshold *=0.1
 
     def Visualize(self):
-        if len(self.SP_pose_list) > 0:
+        if self.SP_poses.shape[2] > 0:
             for i in range(len(self.viz_world_view_transform_list)):
                 viz_world_view_transform = self.viz_world_view_transform_list[i]
                 viz_full_proj_transform = self.viz_full_proj_transform_list[i]
                 viz_camera_center = self.viz_camera_center_list[i]
-                render_pkg = mg_render(self.FoVx, self.FoVy, 480, 640, viz_world_view_transform, viz_full_proj_transform,
+                render_pkg = mg_render(self.FoVx, self.FoVy, self.height, self.width, viz_world_view_transform, viz_full_proj_transform,
                                        viz_camera_center, self.gaussian, self.pipe, self.background, 1.0)
                 img = render_pkg["render"]
-                np_render = img.permute(1, 2, 0).detach().to("cpu").numpy()
+            # print(img)
+                np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
                 cv2.imshow(f"start_gs{i}", np_render)
                 cv2.waitKey(1)
+
+
+    # for i in range(self.SP_poses.shape[2]):
+        #     img_gt = self.SP_img_gt_list[i].detach()
+        #     world_view_transform = self.world_view_transform_list[i]
+        #     full_proj_transform = self.full_proj_transform_list[i]
+        #     camera_center = self.camera_center_list[i]
+        #     render_pkg = mg_render(self.FoVx, self.FoVy, self.height, self.width, world_view_transform,
+        #                            full_proj_transform,
+        #                            camera_center, self.gaussian, self.pipe, self.background, 1.0)
+        #
+        #     img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg[
+        #         "viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        #     print("img", img.device)
+        #     print("imggt", img_gt.device)
+        #     np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
+        #     cv2.imshow(f"iter", np_render)
+        #     cv2.waitKey(1)
+
     def GaussianMap(self, mapping_result_instance):
+
         if not mapping_result_instance[0]:
             return
-        rgb = mapping_result_instance[2]
-        gray = mapping_result_instance[3]
-        SP_xyz = mapping_result_instance[4]
-        pose = mapping_result_instance[5]
+        mapping_result = mapping_result_instance[1]
+        status = mapping_result[0]
 
-        if not mapping_result_instance[1]: #First KF
+        if (not status[0]) and (not status[1]) and (not status[2]):
+            return
+
+        elif (not status[0]) and (not status[1]) and status[2]:  # BA
+            # BA_results = mapping_result[1]
+            # SP_poses = BA_results[0].detach()  # torch
+            # self.SP_poses[:, :, :SP_poses.shape[2]] = SP_poses.to(self.device)
+            #
+            # for i in range(SP_poses.shape[2]):
+            #     pose = SP_poses[:, :, i]
+            #
+            #     # pre-compute poses
+            #     inv_pose = torch.from_numpy(inv(pose).T).type(torch.FloatTensor)
+            #     world_view_transform = inv_pose
+            #     camera_center = inv(world_view_transform)[3, :3]
+            #     camera_center = torch.from_numpy(camera_center)
+            #
+            #     full_proj_transform = (world_view_transform.unsqueeze(0).bmm(
+            #         (self.projection_matrix).detach().to("cpu").unsqueeze(0))).squeeze(0).type(torch.FloatTensor).to(
+            #         self.device)
+            #     world_view_transform = world_view_transform.type(torch.FloatTensor).to(self.device)
+            #     camera_center = camera_center.type(torch.FloatTensor).to(self.device)
+            #
+            #     self.full_proj_transform_list[i] = full_proj_transform
+            #     self.world_view_transform_list[i] = world_view_transform
+            #     self.camera_center_list[i] = camera_center
+            return
+
+        sensor = mapping_result[1]
+        rgb = sensor[0]
+        SP_xyz = sensor[1]
+        with torch.no_grad():
+            xyz_t = torch.from_numpy(SP_xyz).to(self.device)
+            pose = mapping_result[2].to(self.device)  # torch.tensor
+
+        if status[0] and (not status[1]) : #First KF
             # First Keyframe
-            self.CreateInitialKeyframe(rgb, gray, SP_xyz, pose)
+            self.CreateInitialKeyframe(rgb, xyz_t, pose)  # rgb must be numpy (Super pixel)
             self.getNerfppNorm(pose)
 
-        else:
-            ref_3d_list= mapping_result_instance[6]
-            ref_color_list= mapping_result_instance[7]
-            self.CreateKeyframe(rgb, gray, SP_xyz, pose, ref_3d_list, ref_color_list)
+        elif status[0] and status[1]:
+            # ref_3d_list= mapping_result[3]
+            # ref_color_list= mapping_result[4]
+            self.CreateKeyframe(rgb, xyz_t, pose)
             self.getNerfppNorm(pose)
+            # print("GMAP3")
+
