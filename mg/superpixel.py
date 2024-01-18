@@ -7,7 +7,6 @@ import torch
 
 import numpy as np
 import cv2
-from numpy.linalg import inv
 
 
 class SuperPixelManager:
@@ -28,11 +27,12 @@ class SuperPixelManager:
         with torch.no_grad():
             indices = torch.empty((2, 0), dtype=torch.int32, device=self.device)
             # indices = []
+            # TODO: 아래의 루프문을 개선해야한다.
             for cls_lbl in range(num_slic):
                 fst_cls = np.argwhere(lbls == cls_lbl)
                 y, x = fst_cls[:, 0], fst_cls[:, 1] # x: 가로, y: 세로
                 indices = torch.cat((indices, torch.tensor(([[int(y.mean())], [int(x.mean())]]),
                                                            dtype=torch.int32, device=self.device)), dim=1)
 
-
+        #
         return indices
