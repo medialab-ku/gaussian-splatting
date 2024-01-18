@@ -11,7 +11,7 @@ from arguments import PipelineParams
 from gaussian_renderer import mg_render
 from argparse import ArgumentParser
 from utils.loss_utils import l1_loss, ssim
-
+import random
 class GaussianMapper:
     def __init__(self):
         self.width = 640
@@ -59,7 +59,7 @@ class GaussianMapper:
         self.cam_centers = []
         self.cameras_extent = 0
         self.size_threshold = 20
-        self.densify_grad_threshold = 0.0001
+        self.densify_grad_threshold = 0.001
         self.loss_threshold = 0.1
 
 
@@ -71,6 +71,7 @@ class GaussianMapper:
         self.viz_world_view_transform_list = []
         self.viz_camera_center_list = []
         self.SetVizParams()
+        self.loss_dict = {}
 
 
 
@@ -279,6 +280,7 @@ class GaussianMapper:
 
         # Gaussian
         self.gaussian.InitializeOptimizer()
+        self.loss_dict[0] = 1.0
 
 
 
@@ -373,23 +375,38 @@ class GaussianMapper:
 
         # Gaussian
         self.gaussian.InitializeOptimizer()
-
+        self.loss_dict[self.SP_poses.shape[2]-1] = 1.0
 
 
 
 
 
     def OptimizeGaussian(self):
+        if self.SP_poses.shape[2] == 0:
+            return
         lambda_dssim = 0.2
-        if self.SP_poses.shape[2] > 0:
-            self.iteration+=1
-            print("OPTIMIZE")
+        kf_cnt_threshold=3
+        kf_cnt_sample=3
+        sample_kf_index_list = []
+
+        self.iteration+=1
+        print("OPTIMIZE")
+        if self.SP_poses.shape[2] <= kf_cnt_threshold + kf_cnt_sample:
+            sample_kf_index_list = list(range(self.SP_poses.shape[2]))
+        else:
+            kf_sorted_by_loss = list(dict(sorted(self.loss_dict.items(), key=lambda x: x[1], reverse=True)))
+            sample_kf_index_list = kf_sorted_by_loss[:3]
+
+            sample_kf_index = random.sample(range(kf_cnt_threshold, self.SP_poses.shape[2]),
+                                            kf_cnt_sample)
+            sample_kf_index_list += [kf_sorted_by_loss[i] for i in sample_kf_index]
+            # print("sample_kf_index_list", sample_kf_index_list)
 
         # self.gaussian.update_learning_rate(self.iteration)
         optimization_i_threshold = 50
         for optimization_i in range(optimization_i_threshold):
             self.densification_interval += 1
-            for i in range(self.SP_poses.shape[2]):
+            for i in sample_kf_index_list:
                 self.iteration_frame[i] += 1
                 img_gt = self.SP_img_gt_list[i].detach()
                 with torch.no_grad():
@@ -397,16 +414,20 @@ class GaussianMapper:
                     full_proj_transform = self.full_proj_transform_list[i]
                     camera_center = self.camera_center_list[i]
                 render_pkg = mg_render(self.FoVx, self.FoVy, self.height, self.width, world_view_transform,
-                                       full_proj_transform, camera_center, self.gaussian, self.pipe, self.background, 1.0)
+                                       full_proj_transform, camera_center, self.gaussian, self.pipe, self.background,
+                                       1.0)
 
                 #
-                img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-                # np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
-                # cv2.imshow(f"iter{i}", np_render)
-                # cv2.waitKey(1)
+                img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg[
+                    "viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                # if(optimization_i == optimization_i_threshold-1):
+                #     np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
+                #     cv2.imshow(f"iter{i}", np_render)
+                #     cv2.waitKey(1)
 
                 Ll1 = l1_loss(img, img_gt)
                 loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
+                self.loss_dict[i] = float(loss.detach())
                 # print(f"{optimization_i}th iter, {i}th kf, loss: {loss}")
                 # if(loss < self.loss_threshold):
                 #     flag = False
@@ -416,19 +437,20 @@ class GaussianMapper:
                 loss.backward()
 
                 self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
-                                                                     radii[visibility_filter])
+                                                                         radii[visibility_filter])
                 self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                if self.densification_interval >20 and self.iteration_frame[i] > 100:
+                if  self.densification_interval > 20 and self.iteration_frame[i] > 300:
+                    print(f"PRUNE {self.iteration} {self.densification_interval} {self.iteration_frame[i]}")
                     self.densification_interval = 0
                     self.iteration_frame[i] = 0
-                    # print("prune begins")
-                    self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent, self.size_threshold)
-                    # print("prune ends")
+                    self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
+                                                    self.size_threshold)
 
                 self.gaussian.optimizer.step()
                 self.gaussian.optimizer.zero_grad(set_to_none=True)
                 del img
                 torch.cuda.empty_cache()
+
 
 
     def Visualize(self):

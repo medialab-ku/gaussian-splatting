@@ -175,7 +175,7 @@ class Mapper:
                                                                device=self.device)), dim=1)
                 continue
             elif current_recon_index[current_u][current_v] >= 0:  # Already recon in current, but new for ref.
-                # Ignore, probably a noise
+                ref_reconindex[ref_u][ref_v] = current_recon_index[current_u][current_v]
                 continue
 
         # compute cam_xyz into global_xyz
@@ -191,23 +191,20 @@ class Mapper:
             current_recon_index = torch.full((self.width, self.height), -1, dtype=torch.int32, device=self.device)
             current_match_uv_total = torch.empty((2, 0), dtype=torch.int32, device=self.device)
 
-        for i in range(len(self.KF_rgb_list)):
-            recent_i = -(i+1)  # begin from the most recent frame
-            ref_orb = self.KF_orb_list[recent_i]
-            ref_recon_index = self.KF_recon_index_list[recent_i]
-            ref_rgb = self.KF_rgb_list[recent_i]
-            ref_xyz = self.KF_xyz_list[recent_i]
-            with torch.no_grad():
-                ref_pose = self.KF_poses[:, :, recent_i]
-            match_result = self.Match2D2D(current_orb, current_recon_index, ref_orb, ref_recon_index, ref_rgb, ref_xyz, ref_pose)
-            if not match_result[0]:
-                break
-            else:
-                with torch.no_grad():
-                    current_match_uv = match_result[1]
-                    ref_match_uv = match_result[2]
-                    current_match_uv_total = torch.cat((current_match_uv_total, current_match_uv), dim=1)
-                    self.KF_match_uv_list[recent_i] = torch.cat((self.KF_match_uv_list[recent_i], ref_match_uv), dim=1)
+        # 가장 최근 KF하고만 Covisibility를 검사한다. (스피드 이슈)
+        ref_orb = self.KF_orb_list[-1]
+        ref_recon_index = self.KF_recon_index_list[-1]
+        ref_rgb = self.KF_rgb_list[-1]
+        ref_xyz = self.KF_xyz_list[-1]
+        with torch.no_grad():
+            ref_pose = self.KF_poses[:, :, -1]
+        match_result = self.Match2D2D(current_orb, current_recon_index, ref_orb, ref_recon_index, ref_rgb, ref_xyz,
+                                      ref_pose)
+        with torch.no_grad():
+            current_match_uv = match_result[1]
+            ref_match_uv = match_result[2]
+            current_match_uv_total = torch.cat((current_match_uv_total, current_match_uv), dim=1)
+            self.KF_match_uv_list[-1] = torch.cat((self.KF_match_uv_list[-1], ref_match_uv), dim=1)
 
         self.KF_match_uv_list.append(current_match_uv_total)
         # print(f"New {len(self.KF_match_uv_list) -1 }th match uv: {self.KF_match_uv_list[-1].shape}\n")
