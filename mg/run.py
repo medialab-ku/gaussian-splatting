@@ -9,7 +9,7 @@ import torch.multiprocessing as mp
 def PlayTumDataset(img_pair_q):
     dataset = TumDataset()
     begin_index = 1
-    cnt = 2000
+    cnt = 2400
     awake = True
     for index in range(cnt):
         rgb, gray, d = dataset.ReturnData(index + begin_index)
@@ -51,27 +51,38 @@ def TrackingTorch(img_pair_q, tracking_result_q,):
 
 def MappingTest(tracking_result_q, mapping_result_q):
     mapper = Mapper()
+    cntr = 0
     while True:
         if not tracking_result_q.empty():
             q_size= tracking_result_q.qsize()
             print(f"PROCESS: MAPPING Q {q_size}")
             instance = tracking_result_q.get()
             if not instance[0]:  # Abort (System is not awake)
+                mapper.DetectLoop()
                 print("Mapping Abort")
                 # mapper.FullBundleAdjustment()
                 mapping_result_q.put([instance[0], []])
                 return
             mapping_result = mapper.Map(instance)
             if mapping_result[0][0]:
+                cntr += 1
                 mapping_result_q.put([True, mapping_result])
-    # else:
-        #     ba_result = mapper.FullBundleAdjustment()
-            # if ba_result[0][2]:
-            #     mapping_result_q.put([True, ba_result])
+            if cntr%100 == 30:
+                cntr =0
+                ba_result = mapper.FullBundleAdjustment(10)
+                if ba_result[0][2]:
+                    mapping_result_q.put([True, ba_result])
+        else:
+            ba_result = mapper.FullBundleAdjustment(10)
+            if ba_result[0][2]:
+                mapping_result_q.put([True, ba_result])
+        # ba_result = mapper.FullBundleAdjustment()
+        # if ba_result[0][2]:
 
 
 def GaussianMappingTest(mapping_result_q):
     gaussian_mapper = GaussianMapper()
+    opt_iter = 0
     viz_iter = 0
     while True:
         if not mapping_result_q.empty():
@@ -82,8 +93,15 @@ def GaussianMappingTest(mapping_result_q):
                 print("Gaussian Mapping Abort")
                 return
             gaussian_mapper.GaussianMap(instance)
+            opt_iter+=1
+            if opt_iter > 5:
+                gaussian_mapper.OptimizeGaussian()
+                opt_iter = 0
+        else:
+            gaussian_mapper.OptimizeGaussian()
+
         # else:
-        gaussian_mapper.OptimizeGaussian()
+        # gaussian_mapper.OptimizeGaussian()
         gaussian_mapper.Visualize()
         # viz_iter+=1
         # if viz_iter > 5:

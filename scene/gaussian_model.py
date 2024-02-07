@@ -168,7 +168,7 @@ class GaussianModel:
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)*1.2
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -358,7 +358,6 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
 
         return optimizable_tensors
-
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
@@ -385,8 +384,9 @@ class GaussianModel:
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        radii_mask = self.max_radii2D > 20
+        selected_pts_mask = torch.logical_or(torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent), radii_mask)
+
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
@@ -420,17 +420,18 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
-        print(f"Prune {self._xyz.shape}")
+        print(f"Prune {self._xyz.shape}", self.percent_dense*extent)
+
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
         prune_mask = (self.get_opacity < min_opacity).squeeze()
-        if max_screen_size:
-            big_points_vs = self.max_radii2D > max_screen_size
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.4 * extent
-            prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+        # if max_screen_size:
+        #     big_points_vs = self.max_radii2D > max_screen_size
+        #     big_points_ws = self.get_scaling.max(dim=1).values > 0.4 * extent
+        #     prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
         print(f"prune and densify: {self._xyz.shape}")
 
@@ -457,7 +458,7 @@ class GaussianModel:
 
             dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 0.0000001)
             # print(dist2)
-            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)*1.8
             rots = torch.zeros((fused_point_cloud.shape[0], 4), dtype=torch.float32, device=self.device)
             rots[:, 0] = 1
 
@@ -490,6 +491,7 @@ class GaussianModel:
             # print(self._scaling.device)
             # print(scaling.device)
             self._scaling_list = torch.cat((self._scaling, scaling), dim=0)
+            print("scaling", self._scaling_list.shape)
             # print("_rotation_list")
             # print(self._rotation.device)
             # print(rotation.device)
