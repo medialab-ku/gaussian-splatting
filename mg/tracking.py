@@ -193,6 +193,7 @@ class Tracker:
             pnp_query_2d_list = pnp_query_2d_list[z_mask_2]
 
             # PNP Solver
+            print("Track PNP", pnp_query_2d_list.shape, pnp_ref_3d_list.shape )
             ret, rvec, tvec, inliers = cv2.solvePnPRansac(pnp_ref_3d_list, pnp_query_2d_list, self.intr,
                                                           distCoeffs=None, flags=cv2.SOLVEPNP_EPNP, confidence=0.9999,
                                                           reprojectionError=1, iterationsCount=1)

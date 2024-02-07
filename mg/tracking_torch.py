@@ -152,7 +152,7 @@ class TrackerTorch:
         match_cnt = 0
         match_cnt_threshold = 100
         for j in matches:
-            if j.distance < 50:
+            if j.distance < 40:
                 match_cnt += 1
             else:
                 break
@@ -224,6 +224,7 @@ class TrackerTorch:
             pnp_ref_3d_list = pnp_ref_3d_list[z_mask_2]
             pnp_query_2d_list = pnp_query_2d_list[z_mask_2]
 
+            # print("Track PNP", pnp_query_2d_list.shape, pnp_ref_3d_list.shape )
             # PNP Solver
             ret, rvec, tvec, inliers = cv2.solvePnPRansac(pnp_ref_3d_list, pnp_query_2d_list, self.intr,
                                                           distCoeffs=None, flags=cv2.SOLVEPNP_EPNP, confidence=0.9999,
@@ -233,7 +234,7 @@ class TrackerTorch:
             axis, angle = QuaternionInfo(quat)
             shift = np.linalg.norm(tvec[:3, 0].T)
             # print(f"angle: {angle}, shift: {shift}")
-            if 0.1 <= angle < 0.2 or 0.1 <= shift < 0.2:  # Mapping is required
+            if 0.2 <= angle < 0.3 or 0.1 <= shift < 0.2:  # Mapping is required
                 # print(f"Make KF! angle: {angle}, shift: {shift}")
                 self.CreateKeyframe(rgb, depth, (current_kp, current_des))
                 relative_pose = [rot, quat, tvec]
