@@ -3,6 +3,7 @@ from tum_dataset import TumDataset
 # from tracking import Tracker
 from tracking_torch import TrackerTorch
 from mapping import Mapper
+from mtf_mapping import MTFMapper
 from gaussian_mapping import GaussianMapper
 import torch.multiprocessing as mp
 
@@ -35,10 +36,14 @@ def PlayTumDataset(img_pair_q):
 
 def TrackingTorch(img_pair_q, tracking_result_q,):
     tracker = TrackerTorch()
+    frame = 0
+
     awake = True
     while True:
         if not img_pair_q.empty():
+            frame+=1
             instance = img_pair_q.get()
+            # print("Tracking frame: ", frame)
             if not instance[0]:  # Abort (System is not awake)
                 print("Tracking Abort")
                 awake = False
@@ -48,36 +53,57 @@ def TrackingTorch(img_pair_q, tracking_result_q,):
             if tracking_result[0][0]:  # Mapping is required
                 tracking_result_q.put([awake, tracking_result])
 
+#
+# def MappingTest(tracking_result_q, mapping_result_q):
+#     mapper = Mapper()
+#     cntr = 0
+#     while True:
+#         if not tracking_result_q.empty():
+#             q_size= tracking_result_q.qsize()
+#             print(f"PROCESS: MAPPING Q {q_size}")
+#             instance = tracking_result_q.get()
+#             if not instance[0]:  # Abort (System is not awake)
+#                 mapper.DetectLoop()
+#                 print("Mapping Abort")
+#                 # mapper.FullBundleAdjustment()
+#                 mapping_result_q.put([instance[0], []])
+#                 return
+#             mapping_result = mapper.Map(instance)
+#             if mapping_result[0][0]:
+#                 cntr += 1
+#                 mapping_result_q.put([True, mapping_result])
+#             # if cntr%100 == 30:
+#             #     cntr =0
+#             #     ba_result = mapper.FullBundleAdjustment(10)
+#             #     if ba_result[0][2]:
+#             #         mapping_result_q.put([True, ba_result])
+#         else:
+#             ba_result = mapper.FullBundleAdjustment(10)
+#             if ba_result[0][2]:
+#                 mapping_result_q.put([True, ba_result])
+#         # ba_result = mapper.FullBundleAdjustment()
+#         # if ba_result[0][2]:
 
-def MappingTest(tracking_result_q, mapping_result_q):
-    mapper = Mapper()
-    cntr = 0
+
+def MTF_Mapping(tracking_result_q, mapping_result_q):
+    mapper = MTFMapper()
     while True:
         if not tracking_result_q.empty():
             q_size= tracking_result_q.qsize()
             print(f"PROCESS: MAPPING Q {q_size}")
             instance = tracking_result_q.get()
             if not instance[0]:  # Abort (System is not awake)
-                mapper.DetectLoop()
                 print("Mapping Abort")
                 # mapper.FullBundleAdjustment()
                 mapping_result_q.put([instance[0], []])
                 return
             mapping_result = mapper.Map(instance)
             if mapping_result[0][0]:
-                cntr += 1
                 mapping_result_q.put([True, mapping_result])
-            if cntr%100 == 30:
-                cntr =0
-                ba_result = mapper.FullBundleAdjustment(10)
-                if ba_result[0][2]:
-                    mapping_result_q.put([True, ba_result])
         else:
-            ba_result = mapper.FullBundleAdjustment(10)
-            if ba_result[0][2]:
-                mapping_result_q.put([True, ba_result])
-        # ba_result = mapper.FullBundleAdjustment()
-        # if ba_result[0][2]:
+            mapping_result = mapper.FullBACall()
+            if mapping_result[0][2]:
+                mapping_result_q.put([True, mapping_result])
 
 
 def GaussianMappingTest(mapping_result_q):
@@ -94,11 +120,11 @@ def GaussianMappingTest(mapping_result_q):
                 return
             gaussian_mapper.GaussianMap(instance)
             opt_iter+=1
-            if opt_iter > 5:
-                gaussian_mapper.OptimizeGaussian()
+            if opt_iter > 5 and not(instance[1][0][3]):
+                gaussian_mapper.OptimizeGaussian(False)
                 opt_iter = 0
         else:
-            gaussian_mapper.OptimizeGaussian()
+            gaussian_mapper.OptimizeGaussian(False)
 
         # else:
         # gaussian_mapper.OptimizeGaussian()
@@ -118,7 +144,8 @@ if __name__ == '__main__':
     process_play_data = mp.Process(target=PlayTumDataset, args=(img_pair_q,))
     # process_tracking = mp.Process(target=TrackingTest, args=(img_pair_q, tracking_result_q,))
     process_tracking_torch = mp.Process(target=TrackingTorch, args=(img_pair_q, tracking_result_q,))
-    process_mapping = mp.Process(target=MappingTest, args=(tracking_result_q, mapping_result_q,))
+    process_mapping = mp.Process(target=MTF_Mapping, args=(tracking_result_q, mapping_result_q,))
+    # process_mapping = mp.Process(target=MappingTest, args=(tracking_result_q, mapping_result_q,))
     process_gaussian_mapping = mp.Process(target=GaussianMappingTest, args=(mapping_result_q,))
 
     process_gaussian_mapping.start()

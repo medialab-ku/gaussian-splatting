@@ -134,10 +134,10 @@ class Mapper:
     def DetectLoop(self, current_idx):
         result = False
         bow_desc = self.KF_bow_list[current_idx]
-        loop_neighbor_list = self.KF_essen_list[current_idx]
+        loop_neighbor_list = self.KF_covis_list[current_idx]
         bow_score_min = 1.0
 
-        oldest_loop_frame = None
+        # oldest_loop_frame = None
 
         for loop_neighbor in loop_neighbor_list:
             bow_neighbor = self.KF_bow_list[loop_neighbor]
@@ -150,60 +150,57 @@ class Mapper:
         for j in range(len(self.KF_bow_list)-1):
             bow_candidate = self.KF_bow_list[j]
             score_new = self.SimilarityBOW(bow_desc, bow_candidate)
-            if bow_score_min < score_new:
+            if bow_score_min < score_new and (not(j in loop_neighbor_list)):
                 loop_candidate.append(j)
-        for neighbor_index in loop_neighbor_list:
-            loop_candidate.remove(neighbor_index) if neighbor_index in loop_candidate else None
+        # for neighbor_index in loop_neighbor_list:
+        #     loop_candidate.remove(neighbor_index) if neighbor_index in loop_candidate else None
         if len(loop_candidate) < 3:
             # 3개 미만이면 볼 것도 없다.
-            return False, None
+            return False
+
         loop_candidate.sort()
         print(current_idx, bow_score_min, " loop candidate after remove", loop_candidate)
         cntr_serial = 1
+        match2d2d_candidate_list = []
         for i in range(1, len(loop_candidate)):
             if loop_candidate[i] - loop_candidate[i-1] == 1:
                 cntr_serial+=1
             else:
                 if cntr_serial > 2:
-                    if not oldest_loop_frame:
-                        oldest_loop_frame = loop_candidate[i - cntr_serial + 1]
-                    elif oldest_loop_frame > loop_candidate[i - cntr_serial + 1]:
-                        oldest_loop_frame = loop_candidate[i - cntr_serial + 1]
-                    print("loop detected: ", current_idx)
                     # orb matching을 한 뒤에, essential, covis graph 등을 생성 한다.
                     result = True
                     for j in range(cntr_serial):
                         hard_close = None
                         ref_idx = loop_candidate[i - j - 1]
-                        if ref_idx == oldest_loop_frame:
-                            hard_close = True
-                        else:
-                            hard_close = False
-                        print("ref_idx: ", ref_idx)
-                        self.LoopMatch2D2D(current_idx, ref_idx, hard_close)
+                        if not (ref_idx in match2d2d_candidate_list):
+                            match2d2d_candidate_list.append(ref_idx)
                 cntr_serial = 0
-        print("cntr_serial", cntr_serial)
         if cntr_serial > 2:
-            if not oldest_loop_frame:
-                oldest_loop_frame = loop_candidate[i - cntr_serial + 1]
-            elif oldest_loop_frame > loop_candidate[i - cntr_serial + 1]:
-                oldest_loop_frame = loop_candidate[i - cntr_serial + 1]
-            print("loop detected: ", current_idx)
             # orb matching을 한 뒤에, essential, covis graph 등을 생성 한다.
             result = True
             for j in range(cntr_serial):
                 hard_close = None
                 ref_idx = loop_candidate[- j - 1]
-                if ref_idx == oldest_loop_frame:
-                    hard_close = True
-                else:
-                    hard_close = False
-                print("ref_idx: ", ref_idx)
-                self.LoopMatch2D2D(current_idx, ref_idx, hard_close)
-        return result, oldest_loop_frame
+                if not (ref_idx in match2d2d_candidate_list):
+                    match2d2d_candidate_list.append(ref_idx)
 
+        match2d2d_candidate_list_tmp = match2d2d_candidate_list.copy()
+        for match2d2d_candidate in match2d2d_candidate_list:
+            loop_list = self.KF_loop_list[match2d2d_candidate]
+            for loop_candidate in loop_list:
+                if not (loop_candidate in match2d2d_candidate_list_tmp):
+                    match2d2d_candidate_list_tmp.append(loop_candidate)
+
+        print ("match2d2d_candidate", match2d2d_candidate_list_tmp)
+        print ("current_candidate", self.KF_loop_list[current_idx])
+        for match2d2d_candidate in match2d2d_candidate_list_tmp:
+            for current_candidate in self.KF_loop_list[current_idx]:
+                self.LoopMatch2D2D(current_candidate, match2d2d_candidate, False)
+
+        return result#, oldest_loop_frame
 
     def LoopMatch2D2D(self, current_idx, ref_idx, hard_close):
+        # hard_close = False
         current_kp, current_des = self.KF_orb_list[current_idx]
         ref_kp, ref_des = self.KF_orb_list[ref_idx]
 
@@ -301,11 +298,14 @@ class Mapper:
                 pointcloud_index += 1
                 continue
             elif current_recon_index[current_u][current_v] >= 0 and ref_reconindex[ref_u][ref_v] >= 0:
-                pointcloud_cntr_subtract_list.append(current_recon_index[current_u][current_v])
-                current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
+                # pointcloud_cntr_subtract_list.append(current_recon_index[current_u][current_v])
+                # current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
+                if current_recon_index[current_u][current_v] > ref_reconindex[ref_u][ref_v]:
+                    pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
+                else:
+                    pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
 
-                pointcloud_ptr_update[current_recon_index[current_u][current_v] ] = ref_reconindex[ref_u][ref_v]
-                pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
+                # pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
 
                 continue
 
@@ -315,14 +315,14 @@ class Mapper:
                 current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
                 # 해당 인덱스 pointcloud의 카운트를 1 증가 시킨다.
 
-                pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
+                # pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
                 pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
                 current_match_uv_list.append((current_u, current_v))
                 continue
             elif current_recon_index[current_u][current_v] >= 0:  # Already recon in current, but new for ref.
                 ref_reconindex[ref_u][ref_v] = current_recon_index[current_u][current_v]
                 # 해당 인덱스 pointcloud의 카운트를 1 증가 시킨다.
-                pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
+                # pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
                 pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
                 ref_match_uv_list.append((ref_u, ref_v))
                 continue
@@ -376,8 +376,12 @@ class Mapper:
                 self.pointclouds_cntr = torch.cat((self.pointclouds_cntr, pointcloud_cntr), dim=1)
                 self.pointclouds_ptr = torch.cat((self.pointclouds_ptr, pointcloud_ptr), dim=1)
             for pc_idx in pointcloud_ptr_update:
-                cntr_update = self.pointclouds_cntr[6, pc_idx]
-                updated_idx = pointcloud_ptr_update[pc_idx]
+                updated_idx = int(pointcloud_ptr_update[pc_idx])
+                while not (updated_idx == int(self.pointclouds_ptr[0][updated_idx])):
+                    print("updated_idx", updated_idx, self.pointclouds_ptr[0][updated_idx])
+                    updated_idx = int(self.pointclouds_ptr[0][updated_idx].detach())
+
+                cntr_update = float(self.pointclouds_cntr[6, pc_idx].detach())
                 self.pointclouds_cntr[6, updated_idx] += cntr_update
                 self.pointclouds_ptr[0][pc_idx] = updated_idx
             ref_match_uv_list_torch = torch.empty((2, 0), dtype=torch.int32, device=self.device)
@@ -389,19 +393,13 @@ class Mapper:
             if len(ref_match_uv_list) > 0:
                 ref_match_uv_list_torch = torch.from_numpy(np.array(ref_match_uv_list)).T.to(self.device)
                 self.KF_match_uv_list[ref_idx] = torch.cat((self.KF_match_uv_list[ref_idx], ref_match_uv_list_torch), dim=1)
-            for i in pointcloud_cntr_add_list:
-                pc_idx = int(self.pointclouds_ptr[0][i])
-                self.pointclouds_cntr[6, pc_idx] += 1
-            for i in pointcloud_cntr_subtract_list:
-                pc_idx = int(self.pointclouds_ptr[0][i])
-                self.pointclouds_cntr[6, pc_idx] -= 1
+            # for i in pointcloud_cntr_add_list:
+            #     pc_idx = int(self.pointclouds_ptr[0][i])
+            #     self.pointclouds_cntr[6, pc_idx] += 1
+            # for i in pointcloud_cntr_subtract_list:
+            #     pc_idx = int(self.pointclouds_ptr[0][i])
+            #     self.pointclouds_cntr[6, pc_idx] -= 1
 
-            if hard_close:
-                ref_covis_list = self.KF_loop_list[ref_idx]
-                current_covis_list = self.KF_loop_list[current_idx]
-                for ref_covis_kf in ref_covis_list:
-                    for current_covis_kf in current_covis_list:
-                        self.LoopMatch2D2D(current_covis_kf, ref_covis_kf, False)
 
 
 
@@ -488,11 +486,14 @@ class Mapper:
                 # 이전 프레임에서 이미 관측되었고, 현재 프레임 에서도 이미 관측 되었다면, 노이즈 일 확률이 높다.
                 # TODO: 제대로 하려면, 해당 pointcloud를 projection해서, 에러가 적은 것을 써야함.
 
-                pointcloud_cntr_subtract_list.append(current_recon_index[current_u][current_v])
-                current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
+                # pointcloud_cntr_subtract_list.append(current_recon_index[current_u][current_v])
+                # current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
 
-                pointcloud_ptr_update[current_recon_index[current_u][current_v] ] = ref_reconindex[ref_u][ref_v]
-                pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
+                if current_recon_index[current_u][current_v] > ref_reconindex[ref_u][ref_v]:
+                    pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
+                else:
+                    pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
+                # pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
                 continue
 
             elif ref_reconindex[ref_u][ref_v] >= 0:  # New match for current, but already recon for ref.
@@ -501,14 +502,14 @@ class Mapper:
                 current_recon_index[current_u][current_v] = ref_reconindex[ref_u][ref_v]
                 # 해당 인덱스 pointcloud의 카운트를 1 증가 시킨다.
 
-                pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
+                # pointcloud_ptr_update[current_recon_index[current_u][current_v]] = ref_reconindex[ref_u][ref_v]
                 pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
                 current_match_uv_list.append((current_u, current_v))
                 continue
             elif current_recon_index[current_u][current_v] >= 0:  # Already recon in current, but new for ref.
                 ref_reconindex[ref_u][ref_v] = current_recon_index[current_u][current_v]
                 # 해당 인덱스 pointcloud의 카운트를 1 증가 시킨다.
-                pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
+                # pointcloud_ptr_update[ref_reconindex[ref_u][ref_v]] = current_recon_index[current_u][current_v]
                 pointcloud_cntr_add_list.append(ref_reconindex[ref_u][ref_v])
                 ref_match_uv_list.append((ref_u, ref_v))
                 continue
@@ -535,8 +536,12 @@ class Mapper:
                 self.pointclouds_cntr = torch.cat((self.pointclouds_cntr, pointcloud_cntr), dim=1)
                 self.pointclouds_ptr = torch.cat((self.pointclouds_ptr, pointcloud_ptr), dim=1)
             for pc_idx in pointcloud_ptr_update:
-                cntr_update = self.pointclouds_cntr[6, pc_idx]
-                updated_idx = pointcloud_ptr_update[pc_idx]
+                updated_idx = int(pointcloud_ptr_update[pc_idx])
+
+                while not (updated_idx == int(self.pointclouds_ptr[0][updated_idx])):
+                    print("updated_idx", updated_idx, self.pointclouds_ptr[0][updated_idx])
+                    updated_idx = int(self.pointclouds_ptr[0][updated_idx].detach())
+                cntr_update = float(self.pointclouds_cntr[6, pc_idx].detach())
                 self.pointclouds_cntr[6, updated_idx] += cntr_update
                 self.pointclouds_ptr[0][pc_idx] = updated_idx
 
@@ -547,12 +552,12 @@ class Mapper:
                 ref_match_uv_list_torch = torch.from_numpy(np.array(ref_match_uv_list)).T.to(self.device)
             if len(current_match_uv_list) > 0:
                 current_match_uv_list_torch = torch.from_numpy(np.array(current_match_uv_list)).T.to(self.device)
-        for i in pointcloud_cntr_add_list:
-            pc_idx = int(self.pointclouds_ptr[0][i])
-            self.pointclouds_cntr[6, pc_idx] += 1
-        for i in pointcloud_cntr_subtract_list:
-            pc_idx = int(self.pointclouds_ptr[0][i])
-            self.pointclouds_cntr[6, pc_idx] -= 1
+        # for i in pointcloud_cntr_add_list:
+        #     pc_idx = int(self.pointclouds_ptr[0][i])
+        #     self.pointclouds_cntr[6, pc_idx] += 1
+        # for i in pointcloud_cntr_subtract_list:
+        #     pc_idx = int(self.pointclouds_ptr[0][i])
+        #     self.pointclouds_cntr[6, pc_idx] -= 1
         return True, current_match_uv_list_torch, ref_match_uv_list_torch, covis, loop, essen
 
     def ComputeCovisibility(self, current_orb):
@@ -621,7 +626,7 @@ class Mapper:
 
 
         current_idx = len(self.KF_bow_list) -1
-        loop_neighbor_list = self.KF_covis_list[-1]
+        loop_neighbor_list = self.KF_covis_list[-1].copy()
         loop_neighbor_list.append(current_idx)
 
         with torch.no_grad():
@@ -629,6 +634,7 @@ class Mapper:
             ones = torch.ones((1, pointclouds.shape[1]), dtype=torch.float32, device=self.device)
 
             BA_poses = torch.empty((3, 4, 0), dtype=torch.float32, device=self.device)
+            print("current_idx",current_idx, "loop_neighbor_list", loop_neighbor_list)
             for neighbor_idx in loop_neighbor_list:
                 neighbor_pose = self.KF_poses[:3, :, neighbor_idx].detach().unsqueeze(dim=2)
                 BA_poses = torch.cat((BA_poses, neighbor_pose), dim=2)
@@ -642,7 +648,7 @@ class Mapper:
         # pose_last = torch.eye((4), dtype=torch.float32,
         #                       device=self.device)[3:4, :].unsqueeze(dim=2).repeat(1, 1, poses.shape[2])
         # poses_four = torch.cat((poses, pose_last), dim=0)
-        pointclouds_lr = 1e-5
+        pointclouds_lr = 1e-6
         poses_lr = 1e-5
         l = [
             {'params': [pointclouds_param], 'lr': pointclouds_lr, "name": "pointclouds"},
@@ -658,14 +664,14 @@ class Mapper:
             pose_last = torch.eye((4), dtype=torch.float32,
                                   device=self.device)[3:4, :].unsqueeze(dim=2).repeat(1, 1, poses.shape[2])
             poses_four = torch.cat((poses, pose_last), dim=0)
-            for i in range(1, len(loop_neighbor_list)):
+            for i in range(len(loop_neighbor_list)):
                 kf_idx = loop_neighbor_list[i]
                 match_uv = self.KF_match_uv_list[kf_idx]
 
                 recon_index = self.KF_recon_index_list[kf_idx].detach()
                 # print("recon_index", recon_index)
-                pointcloud_indice = recon_index[match_uv[0, :], match_uv[1, :]]
-                print("recon_index", recon_index.shape)
+                pointclouds_ptr_indice = recon_index[match_uv[0, :], match_uv[1, :]]
+                pointcloud_indice = torch.index_select(self.pointclouds_ptr, 1, pointclouds_ptr_indice).squeeze()
                 pointcloud_seen_from_kf = torch.index_select(pointclouds_param, 1, pointcloud_indice)
 
                 pointclouds_cntr = torch.index_select(pointclouds[6, :].unsqueeze(dim=0), 1, pointcloud_indice)
@@ -685,17 +691,18 @@ class Mapper:
                 match_uv_mask = match_uv_ctr[:, mask]  # 원본 uv
                 loss = torch.norm((match_uv_mask - cam_uv_mask[:2, :]), dim=0)
                 sorted_loss, _ = loss.sort(dim=0)
-                inlier_num_min = int(loss.shape[0] * 0.25)
+                inlier_num_min = int(loss.shape[0] * 0.0)
                 inlier_num_max = int(loss.shape[0] * 1.0)
                 loss_kf = torch.sum(sorted_loss[inlier_num_min:inlier_num_max])
                 loss_total += loss_kf
                 uv_cnt += (inlier_num_max - inlier_num_min)
-                if iteration == iteration_num-1 and (loss_kf/(inlier_num_max - inlier_num_min) > 50):
-                    hard_close_candidate.append(i)
+                # if iteration == iteration_num-1 and (loss_kf/(inlier_num_max - inlier_num_min) > 50):
+                #     hard_close_candidate.append(kf_idx)
                 # loss_mask = loss[loss.lt(10.0)]
                 # loss_total += torch.sum(loss_mask)
                 # uv_cnt += int(loss_mask.shape[0])
             loss_total = loss_total/uv_cnt
+            print("LOCAL BA losee:", loss_total)
             loss_total.backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -706,16 +713,11 @@ class Mapper:
             kf_idx = loop_neighbor_list[i]
             pose_update = poses_train[:, :, i]
             self.KF_poses[:3, :, kf_idx] = pose_update.detach()
-        for hard_close_kf in hard_close_candidate:
-            loop_neighbor_list = self.KF_essen_list[hard_close_kf]
-            if len(loop_neighbor_list) > 0:
-                loop_neighbor_list.sort()
-                self.LoopMatch2D2D(hard_close_kf, loop_neighbor_list[0], True)
-            else:
-                loop_neighbor_list = self.KF_loop_list[hard_close_kf]
-                if len(loop_neighbor_list) > 0:
-                    loop_neighbor_list.sort()
-                    self.LoopMatch2D2D(hard_close_kf, loop_neighbor_list[0], True)
+        # for hard_close_kf in hard_close_candidate:
+        #     loop_neighbor_list = self.KF_loop_list[hard_close_kf].copy()
+        #     if len(loop_neighbor_list) > 0:
+        #         loop_neighbor_list.sort()
+        #         self.LoopMatch2D2D(hard_close_kf, loop_neighbor_list[0], True)
         SP_poses = torch.index_select(self.KF_poses, 2, self.SP_index_list)
         self.SP_pose = SP_poses[:, :, -1].detach()
         print("LOOP BA ENDS")
@@ -724,10 +726,6 @@ class Mapper:
         Result_GMapping = False
         Result_First_KF = False
         Result_BA = True
-        for i in range(0, len(self.KF_match_uv_list)):
-            loop_neighbor_list = self.KF_covis_list[i]
-            loop_neighbor_list.sort()
-            print(i, "neighbor: ", loop_neighbor_list)
 
         if len(self.KF_match_uv_list) < 5:
             return [False, False, False], [], [], []
@@ -745,7 +743,7 @@ class Mapper:
             torch.cat((pointclouds[:3, :].detach(), ones), dim=0).requires_grad_(True))
         poses_train = nn.Parameter(self.KF_poses[:3, :, 1:].detach().requires_grad_(True))
 
-        pointclouds_lr = 1e-5
+        pointclouds_lr = 1e-6
         poses_lr = 1e-5
         l = [
             {'params': [pointclouds_param], 'lr': pointclouds_lr, "name": "pointclouds"},
@@ -767,8 +765,10 @@ class Mapper:
                     continue
                 recon_index = self.KF_recon_index_list[i].detach()
                 # print("recon_index", recon_index)
-                pointcloud_indice = recon_index[match_uv[0, :], match_uv[1, :]]
+                pointclouds_ptr_indice = recon_index[match_uv[0, :], match_uv[1, :]]
+                pointcloud_indice = torch.index_select(self.pointclouds_ptr, 1, pointclouds_ptr_indice).squeeze()
                 pointcloud_seen_from_kf = torch.index_select(pointclouds_param, 1, pointcloud_indice)
+
                 pointclouds_cntr = torch.index_select(pointclouds[6, :].unsqueeze(dim=0), 1, pointcloud_indice)
                 cntr_mask = pointclouds_cntr[0, :] > 3
                 pointcloud_seen_from_kf_ctr = pointcloud_seen_from_kf[:, cntr_mask]
@@ -788,7 +788,7 @@ class Mapper:
                 inlier_num_min = int(sorted_loss.shape[0] * 0.0)
                 inlier_num_max = int(sorted_loss.shape[0] * 0.9)
                 loss_kf = torch.sum(sorted_loss[inlier_num_min:inlier_num_max])
-                print(i, inlier_num_max - inlier_num_min, loss_kf, "KF loss: ", loss_kf/(inlier_num_max - inlier_num_min))
+                # print(i, inlier_num_max - inlier_num_min, loss_kf, "KF loss: ", loss_kf/(inlier_num_max - inlier_num_min))
                 loss_total += loss_kf
                 uv_cnt += (inlier_num_max - inlier_num_min)
 
@@ -798,12 +798,12 @@ class Mapper:
                 # loss_total += torch.sum(loss_mask)
                 # uv_cnt += int(loss_mask.shape[0])
             loss_total = loss_total/uv_cnt
-            print("losee:", loss_total)
+            print("FULL BA losee:", loss_total)
             loss_total.backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         self.pointclouds_cntr[:3, :] = pointclouds_param[:3, :].detach()
-        self.KF_poses[:3, :, :] = poses[:3, :, :].detach()
+        self.KF_poses[:3, :, 1:] = poses_train[:3, :, :].detach()
         SP_poses = torch.index_select(self.KF_poses, 2, self.SP_index_list)
         self.SP_pose = SP_poses[:, :, -1].detach()
         print("FULL BA ENDS")
@@ -864,27 +864,28 @@ class Mapper:
                 KF_relative_pose[:3, :3] = torch.from_numpy(rot)
                 KF_relative_pose[:3, 3] = torch.from_numpy(tvec).squeeze()
 
-                Prev_KF_pose= self.KF_poses[:, :, -1]
+                Prev_KF_pose= self.KF_poses[:, :, -1].detach()
 
                 KF_current_pose = torch.matmul(Prev_KF_pose, torch.inverse(KF_relative_pose))
                 current_recon_index = self.ComputeCovisibility((current_kp, current_des))
                 self.CreateKeyframe(rgb_img, KF_xyz, (current_kp, current_des), KF_current_pose, current_recon_index)
-            loop_detected, oldest_loop_frame = self.DetectLoop(len(self.KF_bow_list)-1)
+            loop_detected = self.DetectLoop(len(self.KF_bow_list)-1)
             BA_result = None
             if loop_detected:
-                current_covis_list = self.KF_loop_list[len(self.KF_bow_list)-1]
+                current_covis_list = self.KF_loop_list[len(self.KF_bow_list)-1].copy()
                 current_covis_list.sort()
                 self.LoopMatch2D2D(len(self.KF_bow_list)-1, current_covis_list[0], True)
                 print("loop_detected")
                 self.LoopBundleAdjustment(100)[3]
-                BA_result = self.FullBundleAdjustment(10)[3]
-                KF_current_pose = self.KF_poses[:, :, -1]
+                BA_val = self.FullBundleAdjustment(10)
+                if BA_val[0][2]:
+                    Result_BA = True
+                    BA_result = BA_val[3]
+                KF_current_pose = self.KF_poses[:, :, -1].detach()
                 ## TODO: Local BA
             with torch.no_grad():
-                print("point_ptr", self.pointclouds_ptr.shape)
-                print("point_cntr", self.pointclouds_cntr.shape)
                 if self.CheckSuperPixelFrame(KF_current_pose):
-                    self.SP_pose = KF_current_pose
+                    self.SP_pose = KF_current_pose.detach()
                     self.SP_index_list = torch.cat(
                         (self.SP_index_list, torch.tensor([self.KF_poses.shape[2] - 1], dtype=torch.int32,
                                                           device=self.device)), dim=0)
