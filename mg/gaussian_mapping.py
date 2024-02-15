@@ -411,7 +411,51 @@ class GaussianMapper:
             self.gaussian.optimizer.zero_grad(set_to_none=True)
             cntr+=1
             del img
-    def OptimizeGaussian(self):
+
+    def FullOptimizeGaussian(self, Flag_densification):
+        if self.SP_poses.shape[2] == 0:
+            return
+        lambda_dssim = 0.2
+        sample_kf_index_list = []
+
+        self.iteration+=1
+        print("OPTIMIZE")
+        sample_kf_index_list = list(range(self.SP_poses.shape[2]))
+
+        # self.gaussian.update_learning_rate(self.iteration)
+        optimization_i_threshold = 10
+        for optimization_i in range(optimization_i_threshold):
+            for i in sample_kf_index_list:
+                img_gt = self.SP_img_gt_list[i].detach()
+                with torch.no_grad():
+                    world_view_transform = self.world_view_transform_list[i]
+                    full_proj_transform = self.full_proj_transform_list[i]
+                    camera_center = self.camera_center_list[i]
+                render_pkg = mg_render(self.FoVx, self.FoVy, self.height, self.width, world_view_transform,
+                                       full_proj_transform, camera_center, self.gaussian, self.pipe, self.background,
+                                       1.0)
+                img, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg[
+                    "viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+                Ll1 = l1_loss(img, img_gt)
+                loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim(img, img_gt))
+                self.loss_dict[i] = float(loss.detach())
+
+                loss.backward()
+
+                self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
+                                                                         radii[visibility_filter])
+                self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                if Flag_densification and i%10 == 0 and optimization_i == (optimization_i_threshold-1):
+                    print(f"PRUNE {self.iteration} ")
+                    self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
+                                                    self.size_threshold)
+
+                self.gaussian.optimizer.step()
+                self.gaussian.optimizer.zero_grad(set_to_none=True)
+                del img
+        torch.cuda.empty_cache()
+    def OptimizeGaussian(self, Flag_densification):
         if self.SP_poses.shape[2] == 0:
             return
         lambda_dssim = 0.2
@@ -434,9 +478,7 @@ class GaussianMapper:
 
         # self.gaussian.update_learning_rate(self.iteration)
         optimization_i_threshold = 10
-        self.densification_interval += 1
         for optimization_i in range(optimization_i_threshold):
-            cntr = 0
             for i in sample_kf_index_list:
                 img_gt = self.SP_img_gt_list[i].detach()
                 with torch.no_grad():
@@ -458,15 +500,13 @@ class GaussianMapper:
                 self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
                                                                          radii[visibility_filter])
                 self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                # if i%10 == 0 and i>0 and optimization_i == (optimization_i_threshold-1):
-                #     print(f"PRUNE {self.iteration} {self.densification_interval}")
-                #     self.densification_interval = 0
-                #     self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
-                #                                     self.size_threshold)
+                if Flag_densification and i%5 == 0 and optimization_i == (optimization_i_threshold-1):
+                    print(f"PRUNE {self.iteration} ")
+                    self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
+                                                    self.size_threshold)
 
                 self.gaussian.optimizer.step()
                 self.gaussian.optimizer.zero_grad(set_to_none=True)
-                cntr+=1
                 del img
         torch.cuda.empty_cache()
 
@@ -484,7 +524,7 @@ class GaussianMapper:
             # print(img)
                 np_render = torch.permute(img, (1, 2, 0)).detach().cpu().numpy()
                 cv2.imshow(f"start_gs{i}", np_render)
-            for i in range(0, self.SP_poses.shape[2], 9):
+            for i in range(0, self.SP_poses.shape[2], 10):
                 viz_world_view_transform = self.world_view_transform_list[i]
                 viz_full_proj_transform = self.full_proj_transform_list[i]
                 viz_camera_center = self.camera_center_list[i]
@@ -515,19 +555,38 @@ class GaussianMapper:
                 xyz_t = torch.from_numpy(SP_xyz).to(self.device)
                 pose = mapping_result[2].to(self.device)  # torch.tensor
 
-            if status[0] and (not status[1]) : #First KF
+            if status[0] and status[1] : #First KF
                 # First Keyframe
                 self.CreateInitialKeyframe(rgb, xyz_t, pose)  # rgb must be numpy (Super pixel)
                 self.getNerfppNorm(pose)
-            elif status[0] and status[1]:
+            elif status[0] and not (status[1]):
                 # ref_3d_list= mapping_result[3]
                 # ref_color_list= mapping_result[4]
                 self.CreateKeyframe(rgb, xyz_t, pose)
                 self.getNerfppNorm(pose)
                 # print("GMAP3")
-            self.InsertionOptimize()
+            if status[2]:
+                with torch.no_grad():
+                    BA_results = mapping_result[3]
+                    SP_poses = BA_results.detach().to(self.device)  # torch
+                    self.SP_poses[:, :, :SP_poses.shape[2]] = SP_poses
 
-        if status[2]:  # BA
+                    for i in range(SP_poses.shape[2]):
+                        pose = SP_poses[:, :, i]
+                        # pre-compute poses
+                        world_view_transform = torch.inverse(pose).T
+                        camera_center = torch.inverse(world_view_transform)[3, :3]
+                        full_proj_transform = torch.matmul(world_view_transform, self.projection_matrix)
+
+                        self.full_proj_transform_list[i] = full_proj_transform.detach()
+                        self.world_view_transform_list[i] = world_view_transform.detach()
+                        self.camera_center_list[i] = camera_center.detach()
+            self.InsertionOptimize()
+            # if status[3]:
+            #     self.FullOptimizeGaussian(True)
+            #     print("DENSIFICATION!")
+
+        elif status[2]:  # BA
             with torch.no_grad():
                 BA_results = mapping_result[3]
                 SP_poses = BA_results.detach().to(self.device)  # torch
