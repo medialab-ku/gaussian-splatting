@@ -379,6 +379,8 @@ class GaussianMapper:
         lambda_dssim = 0.2
         optimization_i_threshold = 10
         index = len(self.SP_img_gt_list)-1
+        # if index > 119 and index < 180:
+        #     return
         for optimization_i in range(optimization_i_threshold):
             cntr = 0
             img_gt = self.SP_img_gt_list[index].detach()
@@ -446,7 +448,7 @@ class GaussianMapper:
                 self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
                                                                          radii[visibility_filter])
                 self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                if Flag_densification and i%10 == 0 and optimization_i == (optimization_i_threshold-1):
+                if Flag_densification and i%30 == 0 and optimization_i == (optimization_i_threshold-1):
                     print(f"PRUNE {self.iteration} ")
                     self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
                                                     self.size_threshold)
@@ -480,6 +482,8 @@ class GaussianMapper:
         optimization_i_threshold = 10
         for optimization_i in range(optimization_i_threshold):
             for i in sample_kf_index_list:
+                # if i > 119 and i < 180:
+                #     continue
                 img_gt = self.SP_img_gt_list[i].detach()
                 with torch.no_grad():
                     world_view_transform = self.world_view_transform_list[i]
@@ -500,7 +504,7 @@ class GaussianMapper:
                 self.gaussian.max_radii2D[visibility_filter] = torch.max(self.gaussian.max_radii2D[visibility_filter],
                                                                          radii[visibility_filter])
                 self.gaussian.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                if Flag_densification and i%5 == 0 and optimization_i == (optimization_i_threshold-1):
+                if Flag_densification and i%20 == 0 and optimization_i == (optimization_i_threshold-1):
                     print(f"PRUNE {self.iteration} ")
                     self.gaussian.densify_and_prune(self.densify_grad_threshold, 0.005, self.cameras_extent,
                                                     self.size_threshold)
