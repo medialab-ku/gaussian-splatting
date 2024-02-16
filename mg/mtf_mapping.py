@@ -20,6 +20,8 @@ class MTFMapper:
             self.KF_poses = torch.empty((4, 4, 0), dtype=torch.float32, device=self.device)
             self.GKF_pose = torch.eye(4, dtype=torch.float32, device=self.device)
             self.GKF_index_list = torch.empty((0), dtype=torch.int32, device=self.device)
+            self.frustum_center = torch.zeros((4,1), dtype=torch.float32, device=self.device)
+            self.frustum_radius = 1.6
 
         self.SetIntrinsics()
 
@@ -63,6 +65,10 @@ class MTFMapper:
         self.intr_np[1][1] = fy
         self.intr_np[1][2] = cy
         self.intr_np[2][2] = 1
+
+        self.frustum_center[2][0] = 1.6
+        self.frustum_center[3][0] = 1.0
+
 
 
 
@@ -413,9 +419,6 @@ class MTFMapper:
                     if not (loop_candidate in match2d2d_candidate_list_tmp):
                         match2d2d_candidate_list_tmp.append(loop_candidate)
 
-            # print("match2d2d_candidate", match2d2d_candidate_list_tmp)
-            # print("current_candidate", self.KF_loop_list[current_idx])
-
             current_candidate_list = self.KF_loop_list[current_idx].copy()
             current_candidate_list.append(current_idx)
 
@@ -428,24 +431,78 @@ class MTFMapper:
             return result, current_covis_list[0]  # , oldest_loop_frame
 
     def UpdatePointcloudsPTR(self, current_idx, ref_idx):
-        current_orb = self.KF_orb_list[current_idx]
+        idx_list = self.KF_covis_list[current_idx].copy()
+        print("Update target: ", current_idx, " with covis list: ", idx_list)
+        print("Update ref: ", ref_idx)
+        idx_list.append(current_idx)
+        idx_list.sort()
+
         ref_orb = self.KF_orb_list[ref_idx]
-
-        current_kp, current_des = current_orb
         ref_kp, ref_des = ref_orb
-        matches = self.bf.match(current_des, ref_des)
-        matches = sorted(matches, key=lambda x: x.distance)
-
-        #헷갈린다
-        current_index = self.index_2D_3D[current_idx].detach()
         ref_index = self.index_2D_3D[ref_idx].detach()
 
+        for i in idx_list:
+            current_orb = self.KF_orb_list[i]
+
+            current_kp, current_des = current_orb
+            matches = self.bf.match(current_des, ref_des)
+            matches = sorted(matches, key=lambda x: x.distance)
+
+            #헷갈린다
+            current_index = self.index_2D_3D[i].detach()
+
+            for pair in matches:
+                if pair.distance < 40:
+                    query_ptr_idx = int(self.pointclouds_ptr[0, int(current_index[pair.queryIdx])].detach())
+                    train_ptr_idx = int(self.pointclouds_ptr[0, int(ref_index[pair.trainIdx])].detach())
+                    diff = self.pointclouds[:3, query_ptr_idx] - self.pointclouds[:3, train_ptr_idx]
+                    if torch.norm(diff) < 1.0 and query_ptr_idx!=train_ptr_idx:
+                        if query_ptr_idx > train_ptr_idx:
+                            self.pointclouds_ptr[0, int(current_index[pair.queryIdx])] = train_ptr_idx
+                            self.pointclouds[6, train_ptr_idx] += self.pointclouds[6, query_ptr_idx].detach()
+                            # print("update!", query_ptr_idx, " -> ", train_ptr_idx)
+                        else:
+                            self.pointclouds_ptr[0, int(ref_index[pair.trainIdx])] = query_ptr_idx
+                            self.pointclouds[6, query_ptr_idx] += self.pointclouds[6, train_ptr_idx].detach()
+                            # print("update!", train_ptr_idx, " -> ", query_ptr_idx)
+                else:
+                    break
+    def UpdatePointcloudsPTRSingle(self, current_idx, ref_idx):
+        ref_orb = self.KF_orb_list[ref_idx]
+        ref_kp, ref_des = ref_orb
+        ref_index = self.index_2D_3D[ref_idx].detach()
+
+        current_orb = self.KF_orb_list[current_idx]
+
+        current_kp, current_des = current_orb
+        matches = self.bf.match(current_des, ref_des)
+        matches = sorted(matches, key=lambda x: x.distance)
+        print("pointclouds_ptr", self.pointclouds_ptr.shape)
+        print("pointclouds", self.pointclouds.shape)
+        #헷갈린다
+        current_index = self.index_2D_3D[current_idx].detach()
+        cntr = 0
         for pair in matches:
             if pair.distance < 40:
-                diff = self.pointclouds[:3, self.pointclouds_ptr[0, int(current_index[pair.queryIdx])]] - self.pointclouds[:3, self.pointclouds_ptr[0, ref_index[pair.trainIdx]]]
-                if torch.norm(diff) < 1.0:
-                    self.pointclouds_ptr[0, int(current_index[pair.queryIdx])] = self.pointclouds_ptr[0, ref_index[pair.trainIdx]].detach()
-
+                cntr+=1
+                query_ptr_idx = int(self.pointclouds_ptr[0, int(current_index[pair.queryIdx])].detach())
+                train_ptr_idx = int(self.pointclouds_ptr[0, int(ref_index[pair.trainIdx])].detach())
+                diff = self.pointclouds[:3, query_ptr_idx] - self.pointclouds[:3, train_ptr_idx]
+                if torch.norm(diff) < 0.5:
+                    cnt = 0
+                    self.pointclouds_ptr[0, int(current_index[pair.queryIdx])] = train_ptr_idx
+                    final_ptr_idx = int(self.pointclouds_ptr[0,train_ptr_idx].detach())
+                    while self.pointclouds_ptr[0,final_ptr_idx] != final_ptr_idx:
+                        final_ptr_idx = int(self.pointclouds_ptr[0,final_ptr_idx].detach())
+                        cnt+=1
+                        if cnt > 5:
+                            break
+                    self.pointclouds_ptr[0, int(current_index[pair.queryIdx])] = final_ptr_idx
+                    self.pointclouds[6, train_ptr_idx] += self.pointclouds[6, query_ptr_idx].detach()
+                    # print("update!", query_ptr_idx, " -> ", train_ptr_idx)
+            else:
+                break
+        return cntr
 
     def CheckSuperPixelFrame(self, pose):
         with torch.no_grad():
@@ -530,7 +587,7 @@ class MTFMapper:
             if uv_cnt == 0:
                 continue
             loss_total = loss_total / uv_cnt
-            print("LOCAL BA losee:", loss_total)
+            # print("LOCAL BA losee:", loss_total)
 
             loss_total.backward()
             optimizer.step()
@@ -611,7 +668,7 @@ class MTFMapper:
             if uv_cnt == 0:
                 continue
             loss_total = loss_total/uv_cnt
-            print("LOCAL BA losee:", loss_total)
+            # print("LOCAL BA losee:", loss_total)
 
             loss_total.backward()
             optimizer.step()
@@ -674,15 +731,15 @@ class MTFMapper:
 
                 loss = torch.norm((keypoints - cam_uv_mask[:2, :]), dim=0)
                 sorted_loss, _ = loss.sort(dim=0)
-                inlier_num_min = int(loss.shape[0] * 0.0)
-                inlier_num_max = int(loss.shape[0] * 1.0)
+                inlier_num_min = int(loss.shape[0] * 0.25)
+                inlier_num_max = int(loss.shape[0] * 0.75)
                 loss_kf = torch.sum(sorted_loss[inlier_num_min:inlier_num_max])
                 loss_total += loss_kf
                 uv_cnt += (inlier_num_max - inlier_num_min)
             if uv_cnt == 0:
                 continue
             loss_total = loss_total / uv_cnt
-            print("FULL BA losee:", loss_total)
+            # print("FULL BA losee:", loss_total)
 
             loss_total.backward()
             optimizer.step()
@@ -696,12 +753,44 @@ class MTFMapper:
         self.GKF_pose = GKF_poses[:, :, -1].detach()
         print("FULL BA ENDS")
 
+    def SpatialSearchMerge(self):
+        for idx_1 in range(len(self.KF_poses)):
+            covis_1 = self.KF_covis_list[idx_1].copy()
+            pose1 = self.KF_poses[:, :, idx_1].detach()
+            for idx_2 in range(idx_1+1, len(self.KF_poses)):
+                if self.ViewSimilarity(pose1, self.KF_poses[:, :, idx_2].detach()):
+                    cntr = self.UpdatePointcloudsPTRSingle(idx_2, idx_1)
+                    if cntr > 100:
+                        if not (idx_1 in self.KF_essen_list[idx_2]):
+                            self.KF_essen_list[idx_2].append(idx_1)
+                        if not (idx_2 in self.KF_essen_list[idx_1]):
+                            self.KF_essen_list[idx_1].append(idx_2)
+                    if cntr > 30:
+                        if not (idx_1 in self.KF_loop_list[idx_2]):
+                            self.KF_loop_list[idx_2].append(idx_1)
+                        if not (idx_2 in self.KF_loop_list[idx_1]):
+                            self.KF_loop_list[idx_1].append(idx_2)
+                    if cntr > 15:
+                        if not (idx_1 in self.KF_covis_list[idx_2]):
+                            self.KF_covis_list[idx_2].append(idx_1)
+                        if not (idx_2 in self.KF_covis_list[idx_1]):
+                            self.KF_covis_list[idx_1].append(idx_2)
+
+    def ViewSimilarity(self, pose1, pose2):
+        center1 = torch.matmul(pose1, self.frustum_center).detach()
+        center2 = torch.matmul(pose2, self.frustum_center).detach()
+        diff = torch.norm(center1 - center2)
+        if diff < 2.0:
+            return True
+        else:
+            return False
+
     def FullBACall(self):
         if len(self.KF_bow_list) <10:
             return  [False, False, False, False], [], [], []
         self.FullBA(10, point_rate=5, pose_rate=3)
         GKF_poses = torch.index_select(self.KF_poses, 2, self.GKF_index_list)
-        return [False, False, True, True], [], [], GKF_poses.detach().cpu()
+        return [False, False, True, False], [], [], GKF_poses.detach().cpu()
 
     def Map(self, tracking_result_instance):
         Flag_GMapping = False
@@ -774,9 +863,14 @@ class MTFMapper:
             detect_result, oldest_frame = self.DetectLoop(len(self.KF_bow_list)-1)
             if detect_result:
                 print('loop detected...')
+                # self.UpdatePointcloudsPTRSingle(len(self.KF_bow_list)-1, oldest_frame)
                 self.UpdatePointcloudsPTR(len(self.KF_bow_list)-1, oldest_frame)  # update point ptr
-                self.LoopBA(len(self.KF_bow_list) - 1, 10, point_rate=3, pose_rate=2)
-                self.FullBA(10, point_rate=5, pose_rate=3)
+                self.LoopBA(len(self.KF_bow_list) - 1, 10, point_rate=4, pose_rate=3)
+                self.FullBA(10, point_rate=4, pose_rate=3)
+                self.SpatialSearchMerge()
+                # self.LoopBA(len(self.KF_bow_list) - 1, 10, point_rate=5, pose_rate=2)
+                # self.FullBA(10, point_rate=5, pose_rate=3)
+                # self.SpatialSearchMerge()
                 Flag_densification = True
                 Flag_BA = True
             else:

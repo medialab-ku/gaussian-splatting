@@ -13,7 +13,8 @@ def PlayTumDataset(img_pair_q):
     cnt = 2400
     awake = True
     for index in range(cnt):
-        rgb, gray, d = dataset.ReturnData(index + begin_index)
+        # rgb, gray, d = dataset.ReturnData(index + begin_index)
+        rgb, gray, d = dataset.ReturnData(cnt - index)
         img_pair_q.put([awake, [rgb, gray, d]])
     # img_pair_q.put([False])
     # return
