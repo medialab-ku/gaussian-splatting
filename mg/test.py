@@ -20,6 +20,13 @@ u2 = 640
 v1 = 0
 v2 = 480
 
+for i in range(10, 0, -1):
+    idx_1 = i - 1
+    print("idx1", idx_1)
+    for j in range(idx_1, 0, -1):
+        idx_2 = j - 1
+        print(idx_1, idx_2)
+
 
 
 near_x1 = (u1 - cx) * near / fx
