@@ -13,8 +13,8 @@ def PlayTumDataset(img_pair_q):
     cnt = 2400
     awake = True
     for index in range(cnt):
-        # rgb, gray, d = dataset.ReturnData(index + begin_index)
-        rgb, gray, d = dataset.ReturnData(cnt - index)
+        rgb, gray, d = dataset.ReturnData(index + begin_index)
+        # rgb, gray, d = dataset.ReturnData(cnt - index)
         img_pair_q.put([awake, [rgb, gray, d]])
     # img_pair_q.put([False])
     # return
@@ -138,7 +138,7 @@ def GaussianMappingTest(mapping_result_q):
 
 
 if __name__ == '__main__':
-    img_pair_q = mp.Queue()
+    img_pair_q = mp.Queue   ()
     tracking_result_q = mp.Queue()
     mapping_result_q = mp.Queue()
 
