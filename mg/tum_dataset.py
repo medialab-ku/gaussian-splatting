@@ -66,10 +66,10 @@ class TumDataset:
             d = cv2.imread(f'{self.path}{a[1]}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
             cv2.imwrite(f'{self.path}pair/depth/{str(cntr).zfill(5)}.png', d)
 
-            self.img_pair.append((rgb, d))
-            self.rgb_list.append(rgb)
-            self.gray_list.append(gray)
-            self.d_list.append(d)
+            # self.img_pair.append((rgb, d))
+            # self.rgb_list.append(rgb)
+            # self.gray_list.append(gray)
+            # self.d_list.append(d)
 
     def get_data_len(self):
         first_list = self.read_file_list(f'{self.path}rgb.txt')

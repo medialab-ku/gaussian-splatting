@@ -7,7 +7,6 @@ class ReplicaDataset:
         self.path = "Z:/TeamFolder/GS_SLAM/Replica/Replica_Dataset/room_0/room_0/Sequence_1/"
         # self.path = "C:/mg/dataset/Replica/Replica_Dataset/office_0/Sequence_1/"
 
-        # TODO: actually, these lists are not used if not initialized
         self.img_pair = []
         self.rgb_list = []
         self.gray_list = []
@@ -61,10 +60,10 @@ class ReplicaDataset:
             print(np.count_nonzero(mask1))
             print(np.count_nonzero(mask2))
 
-            self.img_pair.append((rgb, d))
-            self.rgb_list.append(rgb)
-            self.gray_list.append(gray)
-            self.d_list.append(d)
+            # self.img_pair.append((rgb, d))
+            # self.rgb_list.append(rgb)
+            # self.gray_list.append(gray)
+            # self.d_list.append(d)
 
     def get_camera_intrinsic(self):
         # https://github.com/Harry-Zhi/semantic_nerf/issues/41
@@ -73,6 +72,7 @@ class ReplicaDataset:
     def ReturnData(self, index):
         file_name = f'{str(index).zfill(5)}.png'
         rgb = cv2.imread(f'{self.path}pair/rgb/{file_name}')
+        # rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         gray = cv2.imread(f'{self.path}pair/gray/{file_name}', cv2.IMREAD_GRAYSCALE)
         d = cv2.imread(f'{self.path}pair/depth/{file_name}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
 

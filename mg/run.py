@@ -1,6 +1,7 @@
 
 from replica_dataset import ReplicaDataset
 from tum_dataset import TumDataset
+from scannet_dataset import ScannetDataset
 # from tracking import Tracker
 from tracking_torch import TrackerTorch
 from mapping import Mapper
@@ -11,8 +12,8 @@ import torch.multiprocessing as mp
 def GetDataset(dataset_type):
     dataset_dict = {
         "TUM": TumDataset(),
-        "REPLICA": ReplicaDataset()
-        # "SCANNET" : ScannetDataset()
+        "REPLICA": ReplicaDataset(),
+        "SCANNET": ScannetDataset()
     }
     dataset = dataset_dict.get(dataset_type)
     # dataset.InitializeDataset()
@@ -41,19 +42,6 @@ def PlayDataset(dataset, img_pair_q):
 #     # return
 #
 #
-# def PlayReplicaDataset(img_pair_q):
-#     dataset = ReplicaDataset()
-#     # data = dataset.InitializeDataset()
-#     begin_index = 1
-#     cnt = 900
-#     awake = True
-#     for index in range(cnt):
-#         rgb, gray, d = dataset.ReturnData(index + begin_index)
-#         # rgb, gray, d = dataset.ReturnData(cnt - index)
-#         img_pair_q.put([awake, [rgb, gray, d]])
-#     # img_pair_q.put([False])
-#     # return
-
 
 # def TrackingTest(img_pair_q, tracking_result_q,):
 #     tracker = Tracker()
@@ -179,7 +167,7 @@ if __name__ == '__main__':
     mapping_result_q = mp.Queue()
 
     # EXAMPLE: TUM, REPLICA, SCANNET
-    dataset_type = "REPLICA"
+    dataset_type = "SCANNET"
     dataset = GetDataset(dataset_type)
     # print(dataset.get_data_len())
 
