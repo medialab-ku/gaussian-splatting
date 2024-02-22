@@ -13,7 +13,7 @@ from argparse import ArgumentParser
 from utils.loss_utils import l1_loss, ssim
 import random
 class GaussianMapper:
-    def __init__(self):
+    def __init__(self, dataset):
         self.width = 640
         self.height = 480
         self.device = "cuda"
@@ -25,10 +25,10 @@ class GaussianMapper:
             self.inv_intr = torch.zeros((3, 3), dtype=torch.float32, device=self.device)
             self.recover = None
             self.uv_mid = None
-        self.SetProjectionMatrix()
+        self.SetProjectionMatrix(dataset)
         self.pipe = PipelineParams(ArgumentParser(description="Training script parameters"))
 
-        self.SetIntrinsics()
+        self.SetIntrinsics(dataset)
         self.SetSPMaskPoints()
         self.full_proj_transform_list = []
         self.world_view_transform_list = []
@@ -76,11 +76,12 @@ class GaussianMapper:
 
 
 
-    def SetIntrinsics(self):
-        fx = 535.4
-        fy = 539.2
-        cx = 320.1
-        cy = 247.6
+    def SetIntrinsics(self, dataset):
+        fx, fy, cx, cy = dataset.get_camera_intrinsic()
+        # fx = 535.4
+        # fy = 539.2
+        # cx = 320.1
+        # cy = 247.6
 
         self.intr[0][0] = fx
         self.intr[0][2] = cx
@@ -104,9 +105,8 @@ class GaussianMapper:
             self.recover[2] = 10.0
             self.recover[3] = 1.0
 
-    def SetProjectionMatrix(self):
-        fx = 535.4
-        fy = 539.2
+    def SetProjectionMatrix(self, dataset):
+        fx, fy = dataset.get_camera_intrinsic()[:2]
 
         FoVx = 2 * math.atan(640 / (2 * fx))
         FoVy = 2 * math.atan(480 / (2 * fy))

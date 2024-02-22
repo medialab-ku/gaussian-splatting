@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 class MTFMapper:
-    def __init__(self):
+    def __init__(self, dataset):
         self.width = 640
         self.height = 480
         self.device = "cuda"
@@ -23,7 +23,7 @@ class MTFMapper:
             self.frustum_center = torch.zeros((4,1), dtype=torch.float32, device=self.device)
             self.frustum_radius = 1.6
 
-        self.SetIntrinsics()
+        self.SetIntrinsics(dataset)
 
         # from images
         self.KF_rgb_list = []
@@ -48,11 +48,12 @@ class MTFMapper:
         self.KF_orb_list = []
 
 
-    def SetIntrinsics(self):
-        fx = 535.4
-        fy = 539.2
-        cx = 320.1
-        cy = 247.6
+    def SetIntrinsics(self, dataset):
+        fx, fy, cx, cy = dataset.get_camera_intrinsic()
+        # fx = 535.4
+        # fy = 539.2
+        # cx = 320.1
+        # cy = 247.6
 
         self.intr[0][0] = fx
         self.intr[0][2] = cx

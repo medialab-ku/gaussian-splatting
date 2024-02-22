@@ -7,7 +7,7 @@ from numpy.linalg import inv
 from utility import Rot2Quat, QuaternionInfo
 
 class TrackerTorch:
-    def __init__(self):
+    def __init__(self, dataset):
         self.width = 640
         self.height = 480
         self.device = "cuda"
@@ -26,15 +26,16 @@ class TrackerTorch:
         with torch.no_grad():
             self.inv_intr = torch.zeros((3, 3), dtype=torch.float32, device=self.device)
 
-        self.SetIntrinsics()
+        self.SetIntrinsics(dataset)
         self.GenerateUVTensor()
         # self.KF_pose = None
 
-    def SetIntrinsics(self):
-        fx = 535.4
-        fy = 539.2
-        cx = 320.1
-        cy = 247.6
+    def SetIntrinsics(self, dataset):
+        fx, fy, cx, cy = dataset.get_camera_intrinsic()
+        # fx = 535.4
+        # fy = 539.2
+        # cx = 320.1
+        # cy = 247.6
 
         self.intr[0][0] = fx
         self.intr[0][2] = cx
