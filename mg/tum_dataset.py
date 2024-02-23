@@ -63,7 +63,7 @@ class TumDataset:
             rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             gray = cv2.imread(f'{self.path}{a[0]}', cv2.IMREAD_GRAYSCALE)
             cv2.imwrite(f'{self.path}pair/gray/{str(cntr).zfill(5)}.png', gray)
-            d = cv2.imread(f'{self.path}{a[1]}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+            d = cv2.imread(f'{self.path}{a[1]}', cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH) / 5000.0
             cv2.imwrite(f'{self.path}pair/depth/{str(cntr).zfill(5)}.png', d)
 
             # self.img_pair.append((rgb, d))

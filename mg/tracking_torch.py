@@ -112,10 +112,10 @@ class TrackerTorch:
 
     def RecoverXYZFromKeyFrame(self, query_kf):
         with torch.no_grad():
-            scale_factor = 5000.0
+            # scale_factor = 5000.0
 
             d = query_kf.unsqueeze(dim=2)
-            d = d / scale_factor
+            # d = d / scale_factor
 
             xyz = torch.mul(self.xy_one.detach(), d)
         return xyz

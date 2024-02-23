@@ -52,14 +52,6 @@ class ReplicaDataset:
             d = cv2.imread(depth_list[cntr], cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH) / 1000.0
             cv2.imwrite(f'{self.path}pair/depth/{str(cntr + 1).zfill(5)}.png', d)
 
-            mask1 = d < 3.0
-            masked_d = d[mask1]
-            mask2 = masked_d > 0.1
-            masked_d = masked_d[mask2]
-
-            print(np.count_nonzero(mask1))
-            print(np.count_nonzero(mask2))
-
             # self.img_pair.append((rgb, d))
             # self.rgb_list.append(rgb)
             # self.gray_list.append(gray)
