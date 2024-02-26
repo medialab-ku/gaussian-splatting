@@ -1,3 +1,4 @@
+
 import os
 import cv2
 class TumDataset:
@@ -91,6 +92,7 @@ class TumDataset:
         fx, fy, cx, cy = k_dict.get(dataset_name, [535.4, 539.2, 320.1, 247.6])
 
         return [fx, fy, cx, cy]
+
 
     def ReturnData(self, index):
         file_name = f'{str(index).zfill(5)}.png'

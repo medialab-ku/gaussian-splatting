@@ -1,7 +1,9 @@
 
+
 from replica_dataset import ReplicaDataset
 from tum_dataset import TumDataset
 from scannet_dataset import ScannetDataset
+
 # from tracking import Tracker
 from tracking_torch import TrackerTorch
 from mapping import Mapper
@@ -28,44 +30,14 @@ def PlayDataset(dataset, img_pair_q):
         rgb, gray, d = dataset.ReturnData(index + begin_index)
         img_pair_q.put([awake, [rgb, gray, d]])
 
-# def PlayTumDataset(img_pair_q):
-#     dataset = TumDataset()
-#     # data = dataset.InitializeDataset()
-#     begin_index = 1
-#     cnt = 2400
-#     awake = True
-#     for index in range(cnt):
-#         rgb, gray, d = dataset.ReturnData(index + begin_index)
-#         # rgb, gray, d = dataset.ReturnData(cnt - index)
-#         img_pair_q.put([awake, [rgb, gray, d]])
-#     # img_pair_q.put([False])
-#     # return
-#
-#
-
-# def TrackingTest(img_pair_q, tracking_result_q,):
-#     tracker = Tracker()
-#     awake = True
-#     while True:
-#         if not img_pair_q.empty():
-#             instance = img_pair_q.get()
-#             if not instance[0]:  # Abort (System is not awake)
-#                 print("Tracking Abort")
-#                 awake = False
-#                 tracking_result_q.put([awake, []])
-#                 return
-#             tracking_result = tracker.Track(instance)
-#             if tracking_result[0][0]:  # Mapping is required
-#                 tracking_result_q.put([awake, tracking_result])
-#                 print(f"Tracking result: {tracking_result_q.qsize()}")
-
 def TrackingTorch(dataset, img_pair_q, tracking_result_q):
     tracker = TrackerTorch(dataset)
+
     frame = 0
 
     awake = True
     while True:
-        if not img_pair_q.empty():
+        if not img_pair_q.empty():          
             frame += 1
             instance = img_pair_q.get()
             # print("Tracking frame: ", frame)
@@ -77,38 +49,6 @@ def TrackingTorch(dataset, img_pair_q, tracking_result_q):
             tracking_result = tracker.Track(instance)
             if tracking_result[0][0]:  # Mapping is required
                 tracking_result_q.put([awake, tracking_result])
-
-#
-# def MappingTest(tracking_result_q, mapping_result_q):
-#     mapper = Mapper()
-#     cntr = 0
-#     while True:
-#         if not tracking_result_q.empty():
-#             q_size= tracking_result_q.qsize()
-#             print(f"PROCESS: MAPPING Q {q_size}")
-#             instance = tracking_result_q.get()
-#             if not instance[0]:  # Abort (System is not awake)
-#                 mapper.DetectLoop()
-#                 print("Mapping Abort")
-#                 # mapper.FullBundleAdjustment()
-#                 mapping_result_q.put([instance[0], []])
-#                 return
-#             mapping_result = mapper.Map(instance)
-#             if mapping_result[0][0]:
-#                 cntr += 1
-#                 mapping_result_q.put([True, mapping_result])
-#             # if cntr%100 == 30:
-#             #     cntr =0
-#             #     ba_result = mapper.FullBundleAdjustment(10)
-#             #     if ba_result[0][2]:
-#             #         mapping_result_q.put([True, ba_result])
-#         else:
-#             ba_result = mapper.FullBundleAdjustment(10)
-#             if ba_result[0][2]:
-#                 mapping_result_q.put([True, ba_result])
-#         # ba_result = mapper.FullBundleAdjustment()
-#         # if ba_result[0][2]:
-
 
 def MTF_Mapping(dataset, tracking_result_q, mapping_result_q):
     mapper = MTFMapper(dataset)
@@ -123,13 +63,12 @@ def MTF_Mapping(dataset, tracking_result_q, mapping_result_q):
                 mapping_result_q.put([instance[0], []])
                 return
             mapping_result = mapper.Map(instance)
-            if mapping_result[0][0]:
-                mapping_result_q.put([True, mapping_result])
-        else:
-            mapping_result = mapper.FullBACall()
-            if mapping_result[0][2]:
-                mapping_result_q.put([True, mapping_result])
-
+            mapping_result_q.put([True, mapping_result])
+            if mapping_result[0][4]:
+                # loop closing 수행
+                loop_close_result = mapper.CloseLoop(mapping_result[4])
+                mapping_result_q.put([True, loop_close_result])
+                # mapper.PointPtrUpdate()
 
 def GaussianMappingTest(dataset, mapping_result_q):
     gaussian_mapper = GaussianMapper(dataset)
